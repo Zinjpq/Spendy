@@ -128,6 +128,7 @@ let notifOpen = false;      // notification dropdown (top toolbar bell) open/clo
 let editingPlanId = null;   // id of the saving plan being edited in the plan modal, or null when adding
 let debts = [];             // Overview debts list — array in IndexedDB 'meta'
 let ccPaidFps = [];         // fingerprints of credit-card transactions ticked "paid" (reminder only; meta 'ccPaidFps')
+let ccNoteFps = {};          // { fingerprint: 'YYYY-MM-DD' } confirm note date for credit-card transactions (meta 'ccNoteFps')
 let cards = [];             // Saved card details (Settings → My cards) — array in meta 'cards'; stored UNENCRYPTED
 let editingCardId = null;   // id of the card being edited in the card modal, or null when adding
 let revealedCards = new Set(); // ids of saved cards whose number/CVV are currently revealed (UI only, not persisted)
@@ -448,6 +449,7 @@ async function loadFromDB() {
   plans = (await getMeta(db, 'plans')) || null; // null → getPlans() shows DEFAULT_PLANS until edited
   debts = (await getMeta(db, 'debts')) || [];
   ccPaidFps = (await getMeta(db, 'ccPaidFps')) || [];
+  ccNoteFps = (await getMeta(db, 'ccNoteFps')) || {};
   cards = (await getMeta(db, 'cards')) || [];
   pinnedCardId = (await getMeta(db, 'pinnedCard')) || null;
   const rawWidgets = await getMeta(db, 'overviewWidgets');
@@ -797,7 +799,7 @@ function render() {
       .concat(tableCats.map(c => `<option value="${esc(c)}"${c===tableCat?' selected':''}>${esc(c)}</option>`)).join('');
     let html = `<div class="table-bar"><label>Category:</label><select onchange="window.tcf(this.value)">${catOpts}</select><span class="table-bar-count">${td.length} of ${data.length} shown</span></div>`;
     const isDebts = view === 'debts';
-    html += `<table><thead><tr><th>#</th><th>Name</th><th>Amount</th><th>Category</th><th>Date</th><th>Method</th>${isDebts ? '<th style="text-align:center">Paid</th>' : ''}</tr></thead><tbody>`;
+    html += `<table><thead><tr><th>#</th><th>Name</th><th>Amount</th><th>Category</th><th>Date</th><th>Method</th><th>Confirm</th>${isDebts ? '<th style="text-align:center">Paid</th>' : ''}</tr></thead><tbody>`;
     const amtStyle = meta.amtColor ? ` style="color:${meta.amtColor}"` : '';
     const sign = meta.amtColor ? '+' : '';
     pd.forEach((d,i) => {
@@ -810,12 +812,14 @@ function render() {
         ? instPeriods.find(p => p.ym === tableDebtSel.sel.ym) : null;
       const paid = isDebts && (selPeriod ? ccPaidFps.includes(`${d.fingerprint}#${selPeriod.k}`) : paidKeysFor(d).every(k => ccPaidFps.includes(k)));
       const tickCell = isDebts ? `<td style="text-align:center"><button class="cc-tick${paid ? ' on' : ''}" onclick="event.stopPropagation();window.ccTick(${d.id})" title="${paid ? 'Mark unpaid' : 'Mark paid'}">${paid ? '✓' : '○'}</button></td>` : '';
+      const noteDate = isDebts ? (ccNoteFps && ccNoteFps[d.fingerprint]) : null;
+      const noteCell = isDebts ? `<td style="text-align:center"><button class="cc-note${noteDate ? ' on' : ''}" onclick="event.stopPropagation();window.ccNote(${d.id})" title="${noteDate ? 'Noted ' + noteDate : 'Confirm sent/received'}">${noteDate ? '✓' : '○'}</button></td>` : '';
       const ci = catsList.indexOf(d.category);
       const cc = NICE_COLORS[ci%NICE_COLORS.length];
       const camIc = d.image ? `<svg class="img-ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" title="View photo" onclick="window.viewImage(event, ${d.id})"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>` : '';
       // Faint (k/N) beside the name only while its statement-month group is selected — the name is never renamed.
       const instBadge = selPeriod ? ` <span class="inst-badge">(${selPeriod.k}/${selPeriod.N})</span>` : '';
-      html += `<tr class="${paid ? 'tx-paid' : ''}" onclick="window.editRow(${d.id})" title="Click to edit"><td style="color:var(--text-3)">${start+i+1}</td><td>${esc(d.name)}${instBadge}${camIc}</td><td class="amt"${amtStyle}>${sign}${fmt(d.amount)}</td><td><span class="cat-badge" style="background:${cc}22;color:${cc}">${esc(d.category)}</span></td><td style="color:var(--text-2)">${fmtDate(d)}</td><td style="color:var(--text-3);font-size:11px">${d.method ? esc(d.method) : '—'}</td>${tickCell}</tr>`;
+      html += `<tr class="${paid ? 'tx-paid' : ''}" onclick="window.editRow(${d.id})" title="Click to edit"><td style="color:var(--text-3)">${start+i+1}</td><td>${esc(d.name)}${instBadge}${camIc}</td><td class="amt"${amtStyle}>${sign}${fmt(d.amount)}</td><td><span class="cat-badge" style="background:${cc}22;color:${cc}">${esc(d.category)}</span></td><td style="color:var(--text-2)">${fmtDate(d)}</td><td style="color:var(--text-3);font-size:11px">${d.method ? esc(d.method) : '—'}</td>${noteCell}${tickCell}</tr>`;
     });
     html += `</tbody></table>`;
     html += `<div class="pagination"><span>${td.length?start+1:0}–${end} of ${td.length}</span><div><button onclick="window.pp()" ${page===0?'disabled':''}>←</button><span style="margin:0 6px">${page+1}/${tp}</span><button onclick="window.np()" ${page>=tp-1?'disabled':''}>→</button></div></div>`;
@@ -1709,7 +1713,22 @@ async function toggleCcPaidTxn(id) {
   render();
   scheduleSyncPush();
 }
+async function toggleCcNote(id) {
+  const r = allData.find(x => x.id === id);
+  if (!r) return;
+  if (!ccNoteFps || typeof ccNoteFps !== 'object') ccNoteFps = {};
+  const fp = r.fingerprint;
+  const noted = !!ccNoteFps[fp];
+  if (!noted) ccNoteFps[fp] = localDateStr(new Date());
+  else delete ccNoteFps[fp];
+  const db = await openDB();
+  await putMeta(db, 'ccNoteFps', ccNoteFps);
+  db.close();
+  render();
+  scheduleSyncPush();
+}
 window.ccTick = (id) => toggleCcPaidTxn(id);
+window.ccNote = (id) => toggleCcNote(id);
 function getPaidAmount(d, fm) {
   if (!d.paidAmounts) return 0;
   return d.isRecurring ? (d.paidAmounts[fm] || 0) : (d.paidAmounts['one-time'] || 0);
@@ -2435,7 +2454,7 @@ function getDebts() { return Array.isArray(debts) ? debts : []; }
 function backupJSON() {
   if (!allData.length) { toast('No data to back up', 'warn'); return; }
   const records = allData.map(({ id, ...r }) => r); // drop autoincrement id; fingerprint dedups on restore
-  const payload = { app: 'spendy', version: 1, records, budgets, goal, catClass, incomeBase, cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, cards: getCards(), pinnedCard: pinnedCardId };
+  const payload = { app: 'spendy', version: 1, records, budgets, goal, catClass, incomeBase, cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, ccNoteFps, cards: getCards(), pinnedCard: pinnedCardId };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2483,9 +2502,10 @@ async function restoreJSON(text) {
   const plans = (!Array.isArray(payload) && Array.isArray(payload.plans)) ? payload.plans : null;
   const debts = (!Array.isArray(payload) && Array.isArray(payload.debts)) ? payload.debts : null;
   const ccPaid = (!Array.isArray(payload) && Array.isArray(payload.ccPaidFps)) ? payload.ccPaidFps : null;
+  const ccNote = (!Array.isArray(payload) && payload.ccNoteFps && typeof payload.ccNoteFps === 'object') ? payload.ccNoteFps : null;
   const cardsList = (!Array.isArray(payload) && Array.isArray(payload.cards)) ? payload.cards : null;
   const pinnedCard = (!Array.isArray(payload) && typeof payload.pinnedCard === 'string') ? payload.pinnedCard : null;
-  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, cards: cardsList, pinnedCard };
+  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, ccNote, cards: cardsList, pinnedCard };
 
   // Summarise exactly what will happen and wait for confirmation (numbers only — safe to innerHTML).
   const lines = [`File has <b>${incoming.length}</b> records: <b style="color:#22c55e">${fresh.length} new</b> will be added, ${incoming.length - fresh.length} already present.`];
@@ -2497,6 +2517,7 @@ async function restoreJSON(text) {
   if (plans) lines.push(`Overwrite <b>saving plans</b> (${plans.length} plans).`);
   if (debts) lines.push(`Overwrite <b>debts & credit cards</b> (${debts.length} entries).`);
   if (cardsList) lines.push(`Overwrite <b>saved cards</b> (${cardsList.length}).`);
+  if (ccNote) lines.push(`Overwrite <b>credit-card confirm notes</b> (${Object.keys(ccNote).length}).`);
   document.getElementById('restore-summary').innerHTML = lines.join('<br>');
   document.getElementById('restore-overlay').style.display = 'flex';
 }
@@ -2505,7 +2526,7 @@ async function restoreJSON(text) {
 async function commitRestore() {
   document.getElementById('restore-overlay').style.display = 'none';
   if (!pendingRestore) return;
-  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, cards: cds, pinnedCard: pc } = pendingRestore;
+  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, ccNote: cn, cards: cds, pinnedCard: pc } = pendingRestore;
   pendingRestore = null;
   const db = await openDB();
   let added = 0;
@@ -2531,6 +2552,7 @@ async function commitRestore() {
   if (pl) await putMeta(db, 'plans', pl);
   if (dt) await putMeta(db, 'debts', dt);
   if (ccp) await putMeta(db, 'ccPaidFps', ccp);
+  if (cn) await putMeta(db, 'ccNoteFps', cn);
   if (cds) await putMeta(db, 'cards', cds);
   if (pc) await putMeta(db, 'pinnedCard', pc);
   // A restored OLD backup may contain legacy split rows ("Foo (k/N)"). Clear the one-time-merge flag so the
@@ -3310,7 +3332,7 @@ function buildSyncPayload() {
   return {
     app: 'spendy', version: 1, syncedAt: Date.now(),
     records, budgets, goal, catClass, incomeBase,
-    cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, cards: getCards(), pinnedCard: pinnedCardId
+    cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, ccNoteFps, cards: getCards(), pinnedCard: pinnedCardId
   };
 }
 
@@ -3398,6 +3420,7 @@ async function fileSyncPull() {
       if (Array.isArray(payload.plans)) await putMeta(db, 'plans', payload.plans);
       if (Array.isArray(payload.debts)) await putMeta(db, 'debts', payload.debts);
       if (Array.isArray(payload.ccPaidFps)) await putMeta(db, 'ccPaidFps', payload.ccPaidFps);
+      if (payload.ccNoteFps && typeof payload.ccNoteFps === 'object') await putMeta(db, 'ccNoteFps', payload.ccNoteFps);
       if (Array.isArray(payload.cards)) await putMeta(db, 'cards', payload.cards);
       if (typeof payload.pinnedCard === 'string' || payload.pinnedCard === null) await putMeta(db, 'pinnedCard', payload.pinnedCard);
       lastSyncedAt = payload.syncedAt;
