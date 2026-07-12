@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spendy</title>
+<!-- Apply the saved theme before first paint to avoid a flash of the wrong theme. -->
+<script>try{document.documentElement.setAttribute('data-theme',localStorage.getItem('spendy-theme')||'light');}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='6' width='28' height='20' rx='3.5' fill='%231f7a4d'/><rect x='6' y='11' width='6' height='4.5' rx='1' fill='%23f5c518'/><rect x='8' y='11' width='2' height='4.5' fill='%23c99700'/><rect x='6' y='19' width='20' height='2.2' rx='1.1' fill='%23ffffff' fill-opacity='.92'/><rect x='6' y='22.6' width='11' height='1.6' rx='.8' fill='%23ffffff' fill-opacity='.55'/></svg>">
+<!-- Editorial type system: Newsreader (serif headings) · Manrope (UI/body) · JetBrains Mono (figures/meta) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+/* ===== Design tokens — warm-monochrome editorial palette, forest-green accent (light default + dark) ===== */
+/* Type system: serif for editorial headings, geometric sans for UI, mono for figures/meta. */
+:root{
+  --font-sans:'Manrope','SF Pro Display','Helvetica Neue',system-ui,-apple-system,sans-serif;
+  --font-serif:'Newsreader','Lyon Text',Georgia,'Times New Roman',serif;
+  --font-mono:'JetBrains Mono','SF Mono','Consolas',ui-monospace,monospace;
+}
+:root, [data-theme="light"]{
+  /* Warm bone canvas, pure-white surfaces, hairline warm-gray borders. */
+  --bg:#f6f5f1; --surface:#ffffff; --surface-2:#f6f5f1; --surface-3:#efeee8;
+  --border:#e8e7e1; --border-2:#deded6; --track:#edece5;
+  --text:#24221d; --text-2:#79766e; --text-3:#78756b; /* lifted from #a3a097 (was ~2.5:1) → ~4.5:1 on the light canvas */
+  --accent:#1f7a4d; --accent-strong:#175e3a; --accent-soft:#eaf2ec; --accent-ink:#2c6342; --on-accent:#ffffff;
+  --pos:#2c6342; --pos-bg:#eaf2ec; --neg:#9f2f2d; --neg-bg:#f8e9e7; --warn:#8a6212; --warn-bg:#f6efd9;
+  --c-income:#2f7d4f; --c-expense:#bd5a3a; --c-invest:#5b58c4; --c-warn:#b5852a;
+  --grid:#eceae3; --tick:#b0ada3; --legend:#79766e;
+  /* Shadows are practically non-existent (< .05 opacity) — depth comes from hairlines + whitespace. */
+  --shadow:0 1px 2px rgba(30,28,22,.04);
+  --card-shadow:0 1px 2px rgba(30,28,22,.03);
+  --hover-shadow:0 2px 10px rgba(30,28,22,.06);
+  --overlay-bg:rgba(36,34,29,.34);
+  --invest-bg:#ecebfa;
+  --st-done:#2c6342; --st-done-bg:rgba(44,99,66,.11);
+  --st-pend:#8a6212; --st-pend-bg:rgba(138,98,18,.11);
+  --st-fail:#9f2f2d; --st-fail-bg:rgba(159,47,45,.11);
+  /* Sidebar — quiet, blends with the warm canvas; washed-green active pill. */
+  --sidebar-bg:#f6f5f1;
+  --sidebar-border:#e8e7e1; --sidebar-section:#726f63; /* was #a8a59b (~2.3:1) → 4.6:1 on the light sidebar */
+  --sidebar-text:#5f5c54; --sidebar-hover-bg:#ffffff; --sidebar-hover-ink:#24221d;
+  --sidebar-active-bg:#eaf2ec; --sidebar-active-ink:#175e3a;
+  --sidebar-brand:#24221d; --sidebar-logo-bg:#1f7a4d; --sidebar-logo-ink:#ffffff;
+}
+[data-theme="dark"]{
+  /* Deep forest-charcoal canvas — dark and green-neutral (not the warm-brown earlier pass). */
+  --bg:#0d100e; --surface:#151a17; --surface-2:#1a201c; --surface-3:#202723;
+  --border:#222b25; --border-2:#2c352e; --track:#171d19;
+  --text:#e8efe9; --text-2:#9aa9a0; --text-3:#859488; /* lifted from #6b7a70 → ≥4.5:1 (WCAG AA) on all dark surfaces */
+  --accent:#3aa873; --accent-strong:#48bd85; --accent-soft:#17231c; --accent-ink:#8fe0b3; --on-accent:#0c160f;
+  --pos:#62c78f; --pos-bg:#162219; --neg:#e08a72; --neg-bg:#2a1c18; --warn:#d8ad55; --warn-bg:#262112;
+  --c-income:#62c78f; --c-expense:#e08a72; --c-invest:#9b97f0; --c-warn:#d8ad55;
+  --grid:#202723; --tick:#697a6f; --legend:#9aa9a0;
+  --shadow:0 1px 2px rgba(0,0,0,.5);
+  --card-shadow:0 1px 2px rgba(0,0,0,.4);
+  --hover-shadow:0 2px 12px rgba(0,0,0,.55);
+  --overlay-bg:rgba(0,0,0,.66);
+  --invest-bg:#1e1d33;
+  --st-done:#62c78f; --st-done-bg:rgba(98,199,143,.14);
+  --st-pend:#d8ad55; --st-pend-bg:rgba(216,173,85,.14);
+  --st-fail:#e08a72; --st-fail-bg:rgba(224,138,114,.14);
+  --sidebar-bg:#0a0d0b;
+  --sidebar-border:#1b241e; --sidebar-section:#859488; /* was #6b7a70 (~4.3:1) → 6.1:1 on the dark sidebar */
+  --sidebar-text:#9aa9a0; --sidebar-hover-bg:#151a17; --sidebar-hover-ink:#e8efe9;
+  --sidebar-active-bg:#17231c; --sidebar-active-ink:#8fe0b3;
+  --sidebar-brand:#e8efe9; --sidebar-logo-bg:#3aa873; --sidebar-logo-ink:#0c160f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased;letter-spacing:-.006em}
+/* Editorial serif for headings; figures unify on the mono var (see the global SF Mono → var swap). */
+.brand,.view-title,.chart-box h3,.sec-head h3,.ov-phead h3,.modal h3{font-family:var(--font-serif);letter-spacing:-.02em}
+
+/* App shell: left sidebar + main */
+.app{display:flex;align-items:flex-start;min-height:100vh}
+.sidebar{width:224px;flex-shrink:0;background:var(--sidebar-bg);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;gap:2px;padding:22px 14px;position:sticky;top:0;height:100vh;transition:width 0.2s ease, padding 0.2s ease}
+.sidebar .brand{font-size:22px;font-weight:600;color:var(--sidebar-brand);letter-spacing:-.02em;padding:6px 8px 16px;display:flex;align-items:center;gap:10px;position:relative}
+.sidebar .brand .logo{width:32px;height:32px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);filter:drop-shadow(0 3px 6px rgba(0,0,0,0.12))}
+.sidebar .brand:hover .logo{transform:scale(1.1) rotate(6deg);filter:drop-shadow(0 5px 12px rgba(0,0,0,0.18))}
+.sidebar .brand .sub{display:block;font-size:10px;color:var(--sidebar-section);font-weight:500;margin-top:2px;letter-spacing:.02em;font-family:var(--font-sans);text-transform:uppercase}
+.sidebar-toggle{background:none;border:none;color:var(--sidebar-text);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;margin-left:auto;transition:background 0.15s, transform 0.2s}
+.sidebar-toggle:hover{background:var(--sidebar-hover-bg);color:var(--sidebar-hover-ink)}
+.sidebar.collapsed{width:68px;padding:22px 10px}
+.sidebar.collapsed .brand-text,
+.sidebar.collapsed .nav-section,
+.sidebar.collapsed .nav-btn span:not(.ico),
+.sidebar.collapsed .nav-link-btn span:not(.ico),
+.sidebar.collapsed .side-act span:not(.ico) {display:none !important}
+.sidebar.collapsed .brand{padding:6px 0 16px;justify-content:center}
+.sidebar.collapsed .sidebar-toggle{margin-left:0;transform:rotate(180deg)}
+.sidebar.collapsed .nav-btn,
+.sidebar.collapsed .nav-link-btn,
+.sidebar.collapsed .side-act{justify-content:center;padding:9px 0}
+.sidebar.collapsed .nav-btn .ico,
+.sidebar.collapsed .nav-link-btn .ico,
+.sidebar.collapsed .side-act .ico{font-size:18px;margin:0;width:auto}
+.nav-section{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--sidebar-section);padding:14px 8px 5px;font-weight:700}
+.nav-btn, .nav-link-btn{display:flex;align-items:center;gap:11px;background:none;border:none;color:var(--sidebar-text);padding:9px 10px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;text-align:left;width:100%;transition:.12s;font-family:inherit;text-decoration:none}
+.nav-btn:hover, .nav-link-btn:hover{background:var(--sidebar-hover-bg);color:var(--sidebar-hover-ink)}
+.nav-btn.active{background:var(--sidebar-active-bg);color:var(--sidebar-active-ink);font-weight:700}
+.nav-btn .ico, .nav-link-btn .ico{font-size:15px;width:18px;text-align:center;transition:transform .3s cubic-bezier(0.34,1.56,0.64,1)}
+.nav-btn:hover .ico, .nav-link-btn:hover .ico, .nav-btn.active .ico{transform:scale(1.18)}
+.sidebar .spacer{flex:1;min-height:10px}
+.side-act{display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);padding:9px 11px;border-radius:8px;font-size:12px;cursor:pointer;text-align:left;width:100%;transition:.12s;font-family:inherit}
+.side-act:hover{background:var(--surface-3);color:var(--text);border-color:var(--border-2)}
+.side-act:active{transform:scale(.985)}
+.side-act.accent{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+.side-act.accent:hover{background:var(--accent-strong);color:var(--on-accent)}
+.side-act .ico{font-size:13px;width:16px;text-align:center}
+.side-act.danger{color:var(--neg);border-color:var(--border-2);background:var(--surface)}
+.side-act.danger:hover{background:var(--neg-bg);border-color:var(--neg)}
+/* Sidebar action buttons sit on the warm canvas — white cards with a solid-green primary */
+.sidebar .side-act{background:var(--surface);border-color:var(--border-2);color:var(--text-2)}
+.sidebar .side-act:hover{background:var(--sidebar-hover-bg);color:var(--sidebar-hover-ink);border-color:var(--border-2)}
+.sidebar .side-act.accent{background:var(--accent);border:1px solid var(--accent);color:var(--on-accent);font-weight:700}
+.sidebar .side-act.accent:hover{background:var(--accent-strong)}
+
+/* Balance eye-toggle button on the bank card */
+.bc-eye{background:none;border:none;color:var(--text-3);cursor:pointer;font-size:16px;padding:2px 5px;margin-left:8px;vertical-align:middle;transition:.15s;line-height:1}
+.bc-eye:hover{color:var(--text)}
+.bc-bal-row{display:flex;align-items:center;gap:4px}
+
+.btn-import{background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);padding:6px 12px;border-radius:7px;font-size:12px;cursor:pointer;transition:.15s;font-family:inherit}
+.btn-import:hover{background:var(--surface-3);color:var(--text);border-color:var(--border-2)}
+.btn-import:active{transform:scale(.985)}
+.btn-import .ico{font-size:14px;margin-right:4px}
+#file-input,#json-input{display:none}
+.toast{position:fixed;bottom:24px;right:24px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;font-size:13px;color:var(--text);z-index:999;opacity:0;transform:translateY(12px);transition:.25s;pointer-events:none;max-width:320px;box-shadow:var(--hover-shadow)}
+.toast.show{opacity:1;transform:translateY(0)}
+
+main{flex:1;max-width:1380px;margin:0 auto;padding:32px;width:100%}
+/* Page header: title + summary on the left, filters/toolbar on the right */
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:26px;flex-wrap:wrap}
+.view-title{font-size:29px;font-weight:500;color:var(--text);letter-spacing:-.025em;margin-bottom:4px;line-height:1.1}
+.view-title .em{font-size:24px;margin-right:11px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+.empty-state{text-align:center;padding:90px 20px;color:var(--text-3)}
+.empty-state .icon{font-size:56px;margin-bottom:16px}
+.empty-state p{font-size:15px;line-height:1.6}
+.empty-state .hint{font-size:12px;color:var(--text-3);margin-top:8px}
+
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;align-items:center}
+.controls label{font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.controls select{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:8px;padding:7px 12px;font-size:12px;outline:none;cursor:pointer;font-family:inherit}
+.controls select:focus{border-color:var(--accent)}
+.controls input[type=search]{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:8px;padding:7px 12px;font-size:12px;outline:none;font-family:inherit;min-width:180px}
+.controls input[type=search]:focus{border-color:var(--accent)}
+
+/* Stat cards */
+.card{background:var(--surface);border-radius:12px;padding:22px;border:1px solid var(--border);box-shadow:var(--card-shadow);display:flex;flex-direction:column;gap:8px;transition:transform .18s,box-shadow .18s}
+.card:hover{transform:translateY(-2px);box-shadow:var(--hover-shadow)}
+.card-top{display:flex;align-items:center;justify-content:space-between}
+.card-ico{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px;background:var(--accent-soft);color:var(--accent-ink)}
+/* Square icon tile colored by record type (xanh income · đỏ expense · tím invest · cam/xám savings) */
+.card-ico.ico-income{background:var(--pos-bg);color:var(--c-income)}
+.card-ico.ico-expense{background:var(--neg-bg);color:var(--c-expense)}
+.card-ico.ico-invest{background:var(--invest-bg);color:var(--c-invest)}
+.card-ico.ico-save{background:var(--accent-soft);color:var(--accent-ink)}
+.card-ico.ico-neutral{background:var(--surface-3);color:var(--text-2)}
+.card .label{font-size:11px;color:var(--text-2);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.card .value{font-size:27px;font-weight:700;color:var(--text);letter-spacing:-.02em;line-height:1.16;word-break:break-word}
+.card .value+.label{margin-top:-2px}
+.card .label+.sub{margin-top:-2px}
+.card .sub{font-size:11px;color:var(--text-3)}
+.badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:3px 9px;border-radius:999px;line-height:1.4;text-transform:uppercase;letter-spacing:.04em}
+.badge-pos{color:var(--pos);background:var(--pos-bg)}
+.badge-neg{color:var(--neg);background:var(--neg-bg)}
+.badge-flat{color:var(--text-2);background:var(--surface-3)}
+
+/* Ledger 2-column layout: main (bar + trend + table) | side (doughnut + budgets + 50/30/20) */
+.ledger-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;margin-bottom:18px;align-items:start}
+.ledger-col-main{display:flex;flex-direction:column;gap:18px;min-width:0}
+.ledger-col-side{display:flex;flex-direction:column;gap:18px;min-width:0}
+
+.chart-box{background:var(--surface);border-radius:12px;padding:20px;border:1px solid var(--border);box-shadow:var(--card-shadow)}
+.chart-box h3{font-size:15px;color:var(--text);margin-bottom:14px;font-weight:500}
+.chart-box canvas{max-height:280px}
+.chart-note{color:var(--text-3);font-weight:400;font-size:11px;font-family:var(--font-sans);letter-spacing:0}
+
+/* Category breakdown list (under the doughnut) */
+#cat-breakdown{margin-top:14px;display:flex;flex-direction:column;gap:1px}
+.cb-row{display:flex;align-items:center;gap:9px;padding:7px 7px;border-radius:9px;cursor:pointer;font-size:12px;transition:.1s}
+.cb-row:hover{background:var(--surface-3)}
+.cb-row.active{background:var(--accent-soft)}
+.cb-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.cb-name{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.cb-amt{color:var(--text-2);font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-size:11px}
+.cb-pct{font-size:10px;font-weight:700;color:var(--text-2);background:var(--surface-3);border-radius:999px;padding:2px 8px;min-width:42px;text-align:center;font-variant-numeric:tabular-nums}
+/* Debts/Credit-Cards tab: owed-totals list that replaces the category doughnut (see renderDebtTotals).
+   Credit-card txns collapse into one row; person/loan debts list by name. */
+.dt-row{display:flex;align-items:center;gap:9px;padding:8px;border-radius:9px;transition:.1s;cursor:pointer}
+.dt-row:hover{background:var(--surface-3)}
+.dt-row.active{background:var(--accent-soft)}
+.dt-tick{width:20px;height:20px;flex:0 0 auto;border-radius:50%;border:1.5px solid var(--border-2);background:transparent;color:var(--text-3);font-size:11px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
+.dt-tick:hover{border-color:var(--c-income);color:#fff;background:var(--c-income)}
+.dt-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.dt-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.dt-name{min-width:0;color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dt-due{font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.dt-due.urgent{color:var(--neg);font-weight:700}
+.install-hint{font-size:10.5px;color:var(--text-3);margin-top:4px}
+.dt-count{font-size:10px;font-weight:600;color:var(--text-3);background:var(--surface-3);border-radius:999px;padding:1px 7px;margin-left:4px}
+.dt-amt{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:13px;font-weight:700;color:var(--text)}
+.dt-empty{color:var(--text-3);font-size:12px;padding:14px 4px;text-align:center}
+/* Credit-card statement-close / payment-due reminder pill (cardDueBadge), shown in #card-due-bar atop the
+   Credit Cards side panel. (The old Overview #card-reminder pill is gone — those reminders now live in the
+   notification bell; see .notif-* below.) */
+#card-due-bar:empty{display:none}
+#card-due-bar{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.card-due{display:flex;flex-direction:column;align-items:flex-start;gap:2px;font-size:11.5px;color:var(--text-2);background:var(--surface-3);border:1px solid var(--border);border-radius:10px;padding:7px 11px;font-variant-numeric:tabular-nums}
+.card-due.urgent{color:#fff;background:var(--neg);border-color:transparent}
+.cd-head{font-weight:700}
+.cd-body{font-size:10.5px;color:var(--text-3)}
+.card-due.urgent .cd-body{color:rgba(255,255,255,.85)}
+.cc-due{font-size:10.5px;opacity:.9;margin-top:8px;letter-spacing:.02em}
+/* Notification bell + dropdown "bubble" in the top toolbar — aggregates card due dates, over-budget
+   categories and reached saving goals (buildNotifications). Replaces the old inline #card-reminder pill. */
+.notif-wrap{position:relative;display:inline-flex}
+.notif-bell{position:relative;display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:9px;background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);font-size:16px;cursor:pointer;font-family:inherit;transition:.15s}
+.notif-bell:hover{border-color:var(--accent);color:var(--text);box-shadow:var(--card-shadow)}
+.notif-bell.open{border-color:var(--accent);color:var(--text)}
+.notif-bell.has-urgent{animation:notif-wiggle 3s ease-in-out infinite}
+@keyframes notif-wiggle{0%,90%,100%{transform:rotate(0)}92%{transform:rotate(-10deg)}94%{transform:rotate(9deg)}96%{transform:rotate(-6deg)}98%{transform:rotate(3deg)}}
+.notif-badge{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:999px;background:var(--neg);color:#fff;font-size:10px;font-weight:700;line-height:17px;text-align:center;font-family:var(--font-mono);box-shadow:0 0 0 2px var(--bg)}
+.notif-pop{position:absolute;top:calc(100% + 9px);right:0;z-index:60;width:330px;max-height:440px;overflow-y:auto;background:var(--surface);border:1px solid var(--border-2);border-radius:14px;box-shadow:var(--hover-shadow);padding:6px}
+.notif-head{display:flex;align-items:center;justify-content:space-between;padding:9px 10px 7px;font-size:14px;font-weight:600;color:var(--text);font-family:var(--font-serif)}
+.notif-head .notif-count{font-size:11px;font-weight:600;color:var(--text-3);font-family:var(--font-mono)}
+.notif-item{display:flex;gap:11px;align-items:flex-start;padding:10px;border-radius:10px;transition:.12s}
+.notif-item[data-view]{cursor:pointer}
+.notif-item[data-view]:hover{background:var(--surface-3)}
+.notif-ic{width:32px;height:32px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:15px;background:var(--surface-3);border:1px solid var(--border)}
+.notif-item.urgent .notif-ic{background:var(--neg-bg);border-color:transparent}
+.notif-body{flex:1;min-width:0}
+.notif-title{font-size:12.5px;font-weight:600;color:var(--text);line-height:1.35}
+.notif-sub{font-size:11px;color:var(--text-3);margin-top:2px;font-variant-numeric:tabular-nums}
+.notif-item.urgent .notif-sub{color:var(--neg);font-weight:600}
+.notif-empty{padding:28px 14px;text-align:center;color:var(--text-3);font-size:12.5px;line-height:1.5}
+.notif-empty .ne-ic{font-size:26px;display:block;margin-bottom:8px}
+/* "Show all / Show less" toggle under the Overview Budgets list */
+.bud-toggle{display:block;width:100%;margin-top:14px;background:none;border:1px dashed var(--border-2);color:var(--text-2);font-size:11.5px;font-weight:600;font-family:inherit;padding:7px;border-radius:9px;cursor:pointer;transition:.12s}
+.bud-toggle:hover{border-color:var(--accent);color:var(--text);background:var(--surface-3)}
+/* Inline category suggestion under the modal Category field (updateCatSuggest) */
+.cat-suggest{margin-top:6px;font-size:11.5px;color:var(--text-3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cat-sug-chip{font-family:inherit;font-size:11.5px;font-weight:700;color:var(--accent);background:var(--accent-soft);border:1px solid var(--accent);border-radius:999px;padding:3px 11px;cursor:pointer;transition:.12s}
+.cat-sug-chip:hover{background:var(--accent);color:#fff}
+/* "Amount looks too small" warning under the modal Amount field (updateAmountWarn) */
+.amt-warn{margin-top:6px;font-size:11.5px;font-weight:600;color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:8px;padding:6px 10px;display:flex;align-items:center;gap:6px}
+
+.table-wrap{background:var(--surface);border-radius:12px;border:1px solid var(--border);overflow-x:auto;box-shadow:var(--card-shadow)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:var(--surface-2);color:var(--text-3);font-weight:600;text-align:left;padding:11px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;text-transform:uppercase;letter-spacing:.05em;font-size:10px}
+td{padding:13px 18px;border-bottom:1px solid var(--border)}
+tbody tr:last-child td{border-bottom:0}
+tr:hover td{background:var(--surface-3)}
+.cat-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:600;line-height:1.4;text-transform:uppercase;letter-spacing:.03em}
+.amt{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-weight:600}
+.pagination{display:flex;justify-content:space-between;align-items:center;padding:11px 16px;font-size:12px;color:var(--text-3)}
+.pagination button{background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);padding:4px 11px;border-radius:7px;cursor:pointer;font-size:12px;font-family:inherit}
+.pagination button:disabled{opacity:.35;cursor:default}
+.pagination button:not(:disabled):hover{background:var(--surface-3);color:var(--text)}
+.summary-bar{font-size:12px;color:var(--text-3);margin-bottom:0;padding:0}
+.table-bar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.table-bar label{font-size:11px;color:var(--text-2)}
+.table-bar select{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:8px;padding:5px 11px;font-size:12px;outline:none;cursor:pointer}
+.table-bar-count{font-size:11px;color:var(--text-3);margin-left:auto}
+tbody tr{cursor:pointer}
+/* Credit Cards ledger: per-row "Paid" tick + dimmed paid rows */
+.cc-tick{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--border-2);background:transparent;color:var(--text-3);font-size:13px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
+.cc-tick:hover{border-color:var(--c-income);color:var(--c-income)}
+.cc-tick.on{background:var(--c-income);border-color:var(--c-income);color:#fff}
+tbody tr.tx-paid td{opacity:.5}
+tbody tr.tx-paid .amt{text-decoration:line-through}
+/* Faint "(k/N)" shown beside an installment row only while its statement-month group is selected in "Remaining owed" */
+.inst-badge{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);opacity:.55;margin-left:5px;font-weight:600}
+
+/* Settings → Saved cards: flat card visual + masked details (stored locally, see renderCardsManager) */
+.cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:4px}
+.cc-card{background:var(--cc-bg,#2f5e4f);color:#fff;border-radius:14px;padding:16px 18px;min-height:158px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:var(--hover-shadow)}
+.cc-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.cc-brand{font-weight:700;letter-spacing:.09em;font-size:14px}
+.cc-label{font-size:11px;opacity:.82;margin-top:2px}
+.cc-chip{width:30px;height:22px;border-radius:5px;background:rgba(255,255,255,.32);flex:0 0 auto}
+.cc-number{font-family:var(--font-mono);font-size:16px;letter-spacing:.1em;margin:10px 0 12px}
+.cc-bottom{display:flex;gap:18px;align-items:flex-end}
+.cc-cap{font-size:8px;text-transform:uppercase;letter-spacing:.08em;opacity:.7;margin-bottom:2px}
+.cc-val{font-family:var(--font-mono);font-size:12px}
+.cc-actions{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+.cc-actions button{flex:0 0 auto;background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:7px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:inherit;transition:.12s}
+.cc-actions button:hover{background:rgba(255,255,255,.32)}
+/* Light card colour → switch ink to dark so text stays legible (white-on-yellow fails contrast). */
+.cc-card.cc-light{color:#16201b}
+.cc-card.cc-light .cc-chip{background:rgba(0,0,0,.20)}
+.cc-card.cc-light .cc-actions button{background:rgba(0,0,0,.12);color:#16201b}
+.cc-card.cc-light .cc-actions button:hover{background:rgba(0,0,0,.24)}
+.cards-empty{color:var(--text-3);font-size:13px;padding:6px 0}
+
+.overlay{position:fixed;inset:0;background:var(--overlay-bg);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;backdrop-filter:blur(2px)}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:26px;width:100%;max-width:400px;max-height:90vh;overflow-y:auto;box-shadow:var(--hover-shadow)}
+.modal h3{font-size:19px;color:var(--text);margin-bottom:6px;font-weight:500}
+.modal label{display:block;font-size:10px;color:var(--text-2);margin:14px 0 5px;text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.modal input,.modal select{width:100%;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:8px;padding:9px 11px;font-size:13px;outline:none;font-family:inherit}
+.modal input:focus,.modal select:focus{border-color:var(--accent)}
+.modal-actions{display:flex;align-items:center;gap:8px;margin-top:24px}
+.modal-actions button{border-radius:8px;padding:9px 16px;font-size:12px;cursor:pointer;border:1px solid var(--border-2);transition:.15s;font-family:inherit}
+.btn-save{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
+.btn-save:hover{background:var(--accent-strong)}
+.btn-save:active{transform:scale(.98)}
+.btn-cancel{background:var(--surface-2);color:var(--text-2)}
+.btn-cancel:hover{background:var(--surface-3);color:var(--text)}
+.btn-del{background:var(--surface-2);color:var(--neg);border-color:var(--border-2)}
+.btn-del:hover{background:var(--neg-bg);border-color:var(--neg)}
+#ef-img-pick{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;background:var(--surface-2);border:1.5px dashed var(--border-2);color:var(--text-2);border-radius:8px;padding:10px 14px;font-size:12px;cursor:pointer;transition:.15s;font-family:inherit}
+#ef-img-pick:hover{border-color:var(--accent);color:var(--accent)}
+#ef-img-preview{position:relative;width:100%}
+#ef-img-thumb{display:block;width:100%;max-height:180px;object-fit:contain;border-radius:8px;background:var(--surface-3);border:1px solid var(--border);cursor:pointer;transition:opacity .15s, transform .3s cubic-bezier(0.34,1.56,0.64,1)}
+#ef-img-thumb:hover{opacity:.92;transform:scale(1.04)}
+#ef-img-remove{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+#ef-img-remove:hover{background:rgba(0,0,0,.8)}
+.img-ic{width:16px;height:16px;color:var(--text-3);opacity:.65;margin-left:5px;vertical-align:middle;cursor:pointer;transition:color .15s,opacity .15s,transform .15s;display:inline-block}
+.img-ic:hover{color:var(--accent);opacity:1;transform:scale(1.25)}
+.edit-modal{max-width:750px}
+.modal-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:24px;margin-top:12px}
+.modal-form label:first-child,.modal-photo label:first-child{margin-top:0}
+.img-pick-icon{font-size:14px;margin-right:4px}
+.modal-photo #ef-img-pick{height:280px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;border-width:2px}
+.modal-photo #ef-img-pick .img-pick-icon{font-size:24px;margin-right:0;margin-bottom:4px}
+.modal-photo #ef-img-thumb{max-height:280px}
+@media (max-width:640px){
+  .edit-modal{max-width:400px}
+  .modal-grid{grid-template-columns:1fr;gap:0}
+  .modal-photo #ef-img-pick{height:auto;padding:20px 14px;flex-direction:row}
+  .modal-photo #ef-img-pick .img-pick-icon{font-size:14px;margin-right:4px;margin-bottom:0}
+  .modal-photo #ef-img-thumb{max-height:180px}
+  .modal-photo label:first-child{margin-top:14px}
+}
+/* Lightbox for full-screen image viewing */
+#img-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:2000;cursor:zoom-out;padding:24px;backdrop-filter:blur(6px)}
+#img-lightbox.show{display:flex}
+#img-lightbox img{max-width:92vw;max-height:90vh;object-fit:contain;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+#img-lb-close{position:fixed;top:18px;right:24px;background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;z-index:2001}
+#img-lb-close:hover{background:rgba(255,255,255,.3)}
+
+.muted{font-size:12px;color:var(--text-3);padding:4px 0;line-height:1.5}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;box-shadow:var(--card-shadow)}
+.sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px}
+.sec-head h3{font-size:15px;color:var(--text);font-weight:500}
+.sec-head .btn-import{padding:5px 11px}
+#settings-view{max-width:760px}
+.settings-head{margin-bottom:20px}
+.settings-card{margin-bottom:14px}
+.settings-acts{display:flex;flex-direction:column;gap:8px}
+.cats-modal{max-width:680px}
+#cats-overlay #cat-manager{max-height:60vh;overflow-y:auto;margin-top:2px;padding-right:4px}
+.cat-mgr-group{margin-bottom:16px}
+.cat-mgr-gh{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:700;margin:4px 0 6px}
+.cat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.cat-row .cat-name{flex:1 1 130px;min-width:110px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:7px;padding:6px 9px;font-size:13px;font-family:inherit;outline:none}
+.cat-row .cat-stat{font-size:11px;color:var(--text-3);white-space:nowrap}
+.cat-row select{background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2);border-radius:7px;padding:5px 7px;font-size:12px;font-family:inherit;outline:none;cursor:pointer}
+.cat-del{background:none;border:1px solid var(--border-2);color:var(--text-3);border-radius:7px;cursor:pointer;padding:4px 9px;font-size:12px;line-height:1}
+.cat-del:hover{border-color:var(--neg);color:var(--neg)}
+.cat-add{display:flex;gap:8px;margin-top:10px}
+.cat-add input{flex:1;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:7px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none}
+.cat-add .cat-add-btn{flex:0 0 auto;width:auto}
+.bud-row{margin-bottom:15px}
+.bud-row:last-child{margin-bottom:0}
+.bud-top{display:flex;justify-content:space-between;font-size:12px;color:var(--text);margin-bottom:5px;gap:8px}
+.bud-top span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bud-nums{font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-size:12px;flex-shrink:0}
+.bud-bar{height:8px;background:var(--track);border-radius:999px;overflow:hidden}
+.bud-fill{height:100%;width:100%;border-radius:999px;transform-origin:left center;transition:transform .35s cubic-bezier(0.22,1,0.36,1)}
+.bud-total{margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+.bud-total .bud-top{color:var(--text);font-weight:700;font-size:13px}
+.bud-total .bud-bar{height:10px}
+/* Inline budget editor (Settings): edit limits in place + drag rows to reorder. */
+.bud-edit-list .bud-total{margin-top:8px}
+.bud-erow{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border)}
+.bud-erow:last-of-type{border-bottom:none}
+.bud-erow.bud-dragging{opacity:.4}
+.bud-erow.bud-drop{box-shadow:inset 0 2px 0 var(--accent)}
+.bud-drag{flex:0 0 auto;cursor:grab;color:var(--text-3);font-size:13px;line-height:1;user-select:none;padding:0 1px}
+.bud-drag:active{cursor:grabbing}
+.bud-erow-main{flex:1 1 auto;min-width:0}
+.bud-erow-main .bud-top{margin-bottom:4px}
+.bud-elimit{flex:0 0 auto;width:104px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:7px;padding:6px 8px;font-size:12px;font-family:var(--font-mono);text-align:right;outline:none}
+.bud-elimit:focus{border-color:var(--accent)}
+.bud-edel{flex:0 0 auto;background:none;border:1px solid var(--border-2);color:var(--text-3);border-radius:7px;cursor:pointer;padding:4px 8px;font-size:12px;line-height:1}
+.bud-edel:hover{border-color:var(--neg);color:var(--neg)}
+.bud-add{display:flex;gap:8px;margin-top:12px}
+.bud-add .bud-add-cat{flex:1 1 auto;min-width:0;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:7px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none;cursor:pointer}
+.bud-add .bud-add-amt{flex:0 0 120px;width:120px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:7px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none}
+.bud-add .bud-add-cat:focus,.bud-add .bud-add-amt:focus{border-color:var(--accent)}
+.bud-add .bud-add-btn{flex:0 0 auto;width:auto}
+.bud-add select:disabled,.bud-add input:disabled,.bud-add button:disabled{opacity:.5;cursor:default}
+#budget-fields,#class-fields{display:grid;grid-template-columns:1fr auto;gap:7px 12px;align-items:center;max-height:50vh;overflow-y:auto}
+#budget-fields label,#class-fields label{margin:0;text-transform:none;font-size:12px;color:var(--text);letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400}
+#budget-fields input{width:140px}
+#class-fields select{width:150px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);border-radius:8px;padding:7px 9px;font-size:12px;outline:none}
+
+/* 50/30/20 panel */
+.fifty-track{position:relative;overflow:visible}
+.fifty-track::after{content:'';position:absolute;top:-2px;bottom:-2px;left:var(--target);width:2px;background:var(--text-3);border-radius:1px}
+.fifty-uncl{margin-top:12px;font-size:12px;color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:10px;padding:8px 11px;cursor:pointer}
+.fifty-uncl:hover{filter:brightness(.97)}
+.fifty-note{font-size:12px;color:var(--text-3);margin-top:10px}
+
+/* Misclassification review */
+.mis-row{padding:10px 12px;border:1px solid var(--border);border-radius:9px;margin-bottom:8px;cursor:pointer;transition:.12s;background:var(--surface-2)}
+.mis-row:last-child{margin-bottom:0}
+.mis-row:hover{background:var(--surface-3);border-color:var(--border-2)}
+.mis-name{font-size:13px;color:var(--text);display:flex;justify-content:space-between;gap:10px;margin-bottom:3px}
+.mis-amt{color:var(--text-2);font-variant-numeric:tabular-nums;font-family:var(--font-mono);flex-shrink:0}
+.mis-move{font-size:11px;color:var(--text-2)}
+.mis-arrow{color:var(--warn);margin:0 4px}
+
+.goal-head{display:flex;align-items:baseline;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.goal-saved{font-size:25px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
+.goal-target{font-size:13px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.goal-sub{font-size:12px;color:var(--text-2);margin-top:9px}
+.goal-break{font-size:11px;color:var(--text-3);margin-top:3px}
+.goal-warn{font-size:11px;color:var(--warn);margin-top:3px}
+
+/* Net-worth "bank card" (Overview, top of the left column — Ponster layout).
+   Real credit-card proportions (aspect-ratio 1.586). Card colours are fixed (same in light/dark). */
+/* Editorial balance card — flat surface, hairline border, accent mark (no gradient/colour fill). */
+.balance-card{position:relative;overflow:hidden;width:100%;aspect-ratio:1.586/1;
+  border-radius:12px;padding:22px 24px;color:var(--text);
+  background:var(--surface);border:1px solid var(--border);
+  display:flex;flex-direction:column;justify-content:space-between;
+  box-shadow:var(--card-shadow)}
+.bc-row{display:flex;justify-content:space-between;position:relative;z-index:1}
+.bc-head{align-items:flex-start}
+.bc-logo{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);gap:2.5px;width:26px;height:26px}
+.bc-logo i{background:var(--accent)}
+.bc-logo i:nth-child(1){border-radius:50% 50% 0 50%}
+.bc-logo i:nth-child(2){border-radius:50% 50% 50% 0}
+.bc-logo i:nth-child(3){border-radius:50% 0 50% 50%}
+.bc-logo i:nth-child(4){border-radius:0 50% 50% 50%}
+.bc-wifi{color:var(--accent)}
+.bc-name{position:relative;z-index:1;font-size:17px;font-weight:600;letter-spacing:.03em;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.bc-foot{align-items:flex-end;gap:14px}
+.bc-k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:5px;font-weight:600}
+.bc-amount{font-family:var(--font-mono);font-size:23px;font-weight:600;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--text)}
+.bc-meta{display:flex;gap:18px;flex-shrink:0}
+.bc-meta .bc-k{margin-bottom:4px}
+.bc-v{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.01em;font-family:var(--font-mono);color:var(--text-2)}
+/* Overview "balance-card" repurposed as the pinned real card (Settings → My cards). Coloured like the
+   Settings .cc-card; click anywhere to reveal + copy the number. See renderBalanceCard. */
+.balance-card.bc-real{background:var(--cc-bg,#2f5e4f);border-color:transparent;color:#fff;cursor:pointer;transition:filter .12s}
+.balance-card.bc-real:hover{filter:brightness(1.05)}
+.balance-card.bc-real .bc-name{color:#fff}
+.balance-card.bc-real .bc-k{color:rgba(255,255,255,.72)}
+.balance-card.bc-real .bc-v{color:#fff}
+.balance-card.bc-real .bc-wifi{color:rgba(255,255,255,.9)}
+.balance-card.bc-real.bc-light{color:#16201b}
+.balance-card.bc-real.bc-light .bc-name,.balance-card.bc-real.bc-light .bc-num,.balance-card.bc-real.bc-light .bc-v{color:#16201b}
+.balance-card.bc-real.bc-light .bc-k{color:rgba(0,0,0,.6)}
+.balance-card.bc-real.bc-light .bc-wifi{color:rgba(0,0,0,.7)}
+.bc-brand{position:relative;z-index:1;font-weight:700;letter-spacing:.09em;font-size:14px}
+.bc-num{position:relative;z-index:1;font-family:var(--font-mono);font-size:19px;letter-spacing:.13em;color:#fff;user-select:all;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bc-copy-hint{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:rgba(255,255,255,.72);align-self:flex-end;white-space:nowrap}
+.balance-card.bc-empty{align-items:center;justify-content:center;cursor:pointer;border-style:dashed}
+.bc-empty-in{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--text-3);font-size:13px;text-align:center}
+.bc-empty-in .bc-ic{font-size:26px}
+/* Pinned-card star in the Settings cards manager */
+.cc-actions button.cc-pinned{background:rgba(255,255,255,.34);font-weight:700}
+
+/* ===== Overview — Ponster 3-column dashboard ===== */
+.ov-grid{display:grid;grid-template-columns:340px 1fr 340px;gap:20px;align-items:start}
+.ov-col{display:flex;flex-direction:column;gap:20px;min-width:0}
+.ov-panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;box-shadow:var(--card-shadow)}
+.ov-phead{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px}
+.ov-phead h3{font-size:15px;color:var(--text);font-weight:500}
+.ov-dots{background:none;border:none;color:var(--text-3);font-size:18px;line-height:1;cursor:pointer;padding:2px 7px;border-radius:8px;font-family:inherit}
+.ov-dots:hover{background:var(--surface-3);color:var(--text)}
+.ov-link{background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;padding:2px 4px;border-radius:6px}
+.ov-link:hover{text-decoration:underline}
+
+/* Quick actions row (under the balance card) */
+.quick-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.qa-btn{display:flex;flex-direction:column;align-items:center;gap:8px;background:none;border:none;cursor:pointer;font-family:inherit;padding:2px}
+.qa-circle{width:46px;height:46px;border-radius:10px;background:var(--surface);border:1px solid var(--border-2);display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:var(--card-shadow);transition:.15s}
+.qa-btn:hover .qa-circle{transform:translateY(-2px);border-color:var(--accent);box-shadow:var(--hover-shadow)}
+.qa-btn:active .qa-circle{transform:scale(.97)}
+.qa-label{font-size:11px;color:var(--text-2);font-weight:500}
+
+
+
+/* Saving plans list */
+.plan-row{display:flex;gap:11px;align-items:center;padding:11px 0;border-top:1px solid var(--border);cursor:pointer;transition:transform .15s}
+.plan-row:first-of-type{border-top:none;padding-top:2px}
+.plan-row:hover{transform:translateX(3px)}
+.plan-icon{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;background:var(--surface-3);border:1px solid var(--border)}
+.plan-body{flex:1;min-width:0}
+.plan-name{font-size:13px;font-weight:600;color:var(--text);display:flex;justify-content:space-between;gap:8px;margin-bottom:5px}
+.plan-name .plan-pct{color:var(--text-3);font-weight:600;font-size:12px;flex-shrink:0}
+.plan-bar{height:6px;background:var(--track);border-radius:999px;overflow:hidden;margin-bottom:4px}
+.plan-fill{height:100%;width:100%;border-radius:999px;transform-origin:left center;transition:transform .35s cubic-bezier(0.22,1,0.36,1)}
+.plan-nums{font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
+
+/* 3 stat cards at the top of the middle column — compact so long VND numbers fit on one line */
+.ov-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.ov-stats .card{padding:16px 16px;border-radius:12px;gap:6px}
+.ov-stats .card-ico{width:32px;height:32px;font-size:15px;border-radius:8px}
+.ov-stats .card .value{font-size:18px}
+.ov-stats .card .label{font-size:10px}
+.ov-stats .card .sub{font-size:10px}
+
+/* Cashflow panel */
+.ov-year{background:var(--surface);color:var(--text);border:1px solid var(--border-2);border-radius:8px;padding:5px 10px;font-size:12px;outline:none;cursor:pointer;font-family:inherit}
+.cashflow-panel canvas{max-height:260px}
+
+/* Recent transactions table */
+.rtx{width:100%;border-collapse:collapse;font-size:12px}
+.rtx th{background:none;text-align:left;padding:8px 10px;color:var(--text-3);font-weight:600;font-size:11px;border-bottom:1px solid var(--border);position:static}
+.rtx td{padding:11px 10px;border-bottom:1px solid var(--border)}
+.rtx tbody tr:last-child td{border-bottom:none}
+.rtx tbody tr{cursor:pointer}
+.rtx tbody tr:hover td{background:var(--surface-3)}
+.rtx-name{font-weight:600;color:var(--text)}
+.rtx-date{color:var(--text-2);white-space:nowrap}
+.rtx-amt{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-weight:700;white-space:nowrap}
+.rtx-note{color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px}
+.status-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:600;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
+.status-pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}
+.st-done{color:var(--st-done);background:var(--st-done-bg)}
+.st-pend{color:var(--st-pend);background:var(--st-pend-bg)}
+.st-fail{color:var(--st-fail);background:var(--st-fail-bg)}
+
+/* Statistic doughnut + tabs (right column) */
+.stat-tabs{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px}
+.stat-tab{background:none;border:none;color:var(--text-2);font-size:11px;font-weight:600;padding:5px 13px;border-radius:6px;cursor:pointer;font-family:inherit}
+.stat-tab.active{background:var(--surface);color:var(--text);box-shadow:var(--card-shadow)}
+.ov-stat-wrap{max-width:240px;margin:6px auto 0}
+#ov-stat{max-height:220px}
+#ov-breakdown{margin-top:12px;display:flex;flex-direction:column;gap:2px}
+.ovb-row{display:flex;align-items:center;gap:9px;padding:6px 4px;font-size:12px}
+.ovb-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.ovb-name{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.ovb-amt{color:var(--text-2);font-variant-numeric:tabular-nums;font-family:var(--font-mono);font-size:11px}
+.ovb-pct{font-size:10px;font-weight:700;color:var(--text-2);background:var(--surface-3);border-radius:999px;padding:2px 8px;min-width:40px;text-align:center;font-variant-numeric:tabular-nums}
+
+/* Recent activity timeline */
+.timeline{display:flex;flex-direction:column}
+.tl-item{position:relative;display:flex;gap:12px;padding-bottom:16px}
+.tl-item:last-child{padding-bottom:0}
+.tl-item::before{content:'';position:absolute;left:16px;top:34px;bottom:0;width:2px;background:var(--border);transform:translateX(-50%)}
+.tl-item:last-child::before{display:none}
+.tl-av{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;background:var(--surface-3);z-index:1}
+.tl-body{flex:1;min-width:0;padding-top:1px}
+.tl-text{font-size:12.5px;color:var(--text);line-height:1.4}
+.tl-text b{font-weight:600}
+.tl-time{font-size:11px;color:var(--text-3);margin-top:2px}
+
+@media(max-width:1200px){
+  .ov-grid{grid-template-columns:320px 1fr}
+  .ov-col-right{grid-column:1 / -1;display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+}
+@media(max-width:768px){
+  .ov-grid{grid-template-columns:1fr}
+  .ov-col-right{grid-template-columns:1fr}
+  .ov-stats{grid-template-columns:1fr}
+}
+
+
+
+
+
+@media(max-width:1100px){.ledger-grid{grid-template-columns:1fr}}
+@media(max-width:768px){
+  main{padding:18px 16px}
+  .app{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:static;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:none;border-bottom:1px solid var(--sidebar-border);gap:6px}
+  .sidebar .brand{padding:4px 8px}
+  .sidebar-toggle{display:none !important}
+  .sidebar .nav-section{display:none}
+  .sidebar .spacer{display:none}
+  .nav-btn{width:auto}
+  .side-act{width:auto}
+/* Debts & Credit Cards panel and rows */
+.debt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  transition: padding-left 0.12s, opacity 0.12s;
+}
+.debt-row:first-of-type {
+  border-top: none;
+  padding-top: 2px;
+}
+.debt-row:hover {
+  padding-left: 3px;
+}
+.debt-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+.debt-body {
+  flex: 1;
+  min-width: 0;
+}
+.debt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.debt-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.debt-amt {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.debt-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-2);
+  gap: 8px;
+}
+.debt-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.debt-badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+}
+.debt-badge.overdue {
+  color: var(--neg);
+  background: var(--neg-bg);
+}
+.debt-badge.upcoming {
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+.debt-badge.paid {
+  color: var(--pos);
+  background: var(--pos-bg);
+}
+.debt-check-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  color: var(--text-3);
+  padding: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  transition: background 0.1s, color 0.1s;
+  flex-shrink: 0;
+}
+.debt-check-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.debt-check-btn.checked {
+  color: var(--pos);
+}
+.debt-row.paid-item {
+  opacity: 0.55;
+}
+.debt-row.paid-item .debt-name {
+  text-decoration: line-through;
+}
+.debts-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media(max-width: 1024px) {
+  .debts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+<aside class="sidebar">
+  <div class="brand">
+    <span class="logo">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" width="32" height="32" style="overflow:visible">
+        <defs>
+          <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="var(--accent)" />
+            <stop offset="100%" stop-color="var(--sidebar-logo-bg)" />
+          </linearGradient>
+        </defs>
+        <!-- Background Card -->
+        <rect x="2" y="11" width="22" height="15" rx="3.5" fill="url(#logoGrad)" opacity="0.45" />
+        <!-- Foreground Card -->
+        <rect x="8" y="6" width="22" height="15" rx="3.5" fill="url(#logoGrad)" stroke="var(--sidebar-bg)" stroke-width="1.5" />
+        <!-- Gold Chip -->
+        <rect x="13" y="10" width="5.5" height="4.5" rx="1" fill="#f5c518" />
+        <!-- Signature Line -->
+        <line x1="13" y1="17.5" x2="25" y2="17.5" stroke="rgba(255,255,255,0.35)" stroke-width="1.5" stroke-linecap="round" />
+        <line x1="13" y1="14.5" x2="15" y2="14.5" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+    </span>
+    <span class="brand-text" style="display:flex;flex-direction:column;line-height:1.15">Spendy<span class="sub">expense tracker</span></span>
+    <button class="sidebar-toggle" id="sidebar-toggle" title="Collapse sidebar">◂</button>
+  </div>
+
+  <div class="nav-section">Overview</div>
+  <button class="nav-btn active" data-view="overview"><span class="ico">📊</span><span>Overview</span></button>
+
+  <div class="nav-section">Ledgers</div>
+  <button class="nav-btn" data-view="expense"><span class="ico">💸</span><span>Expenses</span></button>
+  <button class="nav-btn" data-view="income"><span class="ico">💰</span><span>Income</span></button>
+  <button class="nav-btn" data-view="invest"><span class="ico">📈</span><span>Investments</span></button>
+  <button class="nav-btn" data-view="debts"><span class="ico">💳</span><span>Credit Cards</span></button>
+
+  <div class="nav-section">System</div>
+  <button class="nav-btn" data-view="settings"><span class="ico">⚙️</span><span>Settings</span></button>
+
+  <div class="spacer"></div>
+
+  <div class="nav-section">Actions</div>
+  <button class="side-act accent" id="add-btn"><span class="ico">➕</span><span id="add-label">Add transaction</span></button>
+  <button class="side-act" id="sync-indicator" style="display:none"><span class="ico">🔗</span><span id="sync-indicator-label">Synced</span></button>
+  <button class="side-act" id="theme-btn"><span class="ico" id="theme-ico">🌙</span><span id="theme-label">Dark mode</span></button>
+
+  <input type="file" id="file-input" accept=".csv">
+  <input type="file" id="json-input" accept=".json,application/json">
+</aside>
+
+<main>
+  <div id="empty-state" class="empty-state">
+    <div class="icon">💸</div>
+    <p>No data yet.</p>
+    <p class="hint">Open <strong>⚙️ Settings → Import CSV</strong> to load a Notion export — or switch to the <strong>Income</strong> / <strong>Investments</strong> tab first, then import (the type follows the open tab).</p>
+  </div>
+
+  <div id="dashboard" style="display:none">
+    <div class="page-head">
+      <div>
+        <div class="view-title" id="view-title"></div>
+        <div class="summary-bar" id="summary-bar"></div>
+      </div>
+      <div class="toolbar">
+        <div class="controls">
+          <label>Month:</label>
+          <select id="month-filter"><option value="all">All</option></select>
+
+          <span id="method-controls" style="display:none">
+            <label>Method:</label>
+            <select id="method-filter"><option value="all">All Methods</option></select>
+          </span>
+
+          <span id="photo-controls" style="display:none">
+            <label>Photo:</label>
+            <select id="photo-filter">
+              <option value="all">All</option>
+              <option value="yes">With Photo</option>
+              <option value="no">Without Photo</option>
+            </select>
+          </span>
+
+          <span id="search-controls" style="display:none">
+            <label>Search:</label>
+            <input id="table-search" type="search" placeholder="Search name / category / date / price…" autocomplete="off">
+          </span>
+        </div>
+        <div class="notif-wrap">
+          <button class="notif-bell" id="notif-bell" type="button" title="Notifications" aria-label="Notifications">🔔<span class="notif-badge" id="notif-badge" style="display:none">0</span></button>
+          <div class="notif-pop" id="notif-pop" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ledger-view">
+      <!-- Table-first: the transaction table is the focus; the "By Category" doughnut on the side filters it. -->
+      <div class="ledger-grid">
+        <div class="ledger-col-main">
+          <div class="table-wrap" id="table-wrap"></div>
+        </div>
+        <div class="ledger-col-side">
+          <div class="chart-box"><div id="card-due-bar"></div><h3 id="pie-title"></h3><canvas id="pie-chart"></canvas><div id="cat-breakdown"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="overview-view" style="display:none">
+      <div class="ov-grid">
+        <!-- Left column: card · saving plans · 50/30/20 -->
+        <div class="ov-col ov-col-left">
+          <div class="balance-card" id="balance-card"></div>
+          <div class="ov-panel" id="saving-plans"></div>
+          <div class="ov-panel" id="ov-fifty"></div>
+        </div>
+        <!-- Middle column: 3 stat cards · cashflow · recent transactions -->
+        <div class="ov-col ov-col-mid">
+          <div class="ov-stats" id="ov-cards"></div>
+          <div class="ov-panel cashflow-panel">
+            <div class="ov-phead">
+              <div class="stat-tabs" id="ov-flow-tabs">
+                <button class="stat-tab" data-mode="flow">Cashflow</button>
+                <button class="stat-tab" data-mode="category">By category</button>
+              </div>
+              <select id="ov-year" class="ov-year"></select>
+            </div>
+            <canvas id="ov-flow"></canvas>
+          </div>
+          <div class="ov-panel" id="recent-tx"></div>
+        </div>
+        <!-- Right column: statistic doughnut · budgets (collapsible) · recent activity -->
+        <div class="ov-col ov-col-right">
+          <div class="ov-panel" id="ov-stat-panel"></div>
+          <div class="ov-panel" id="ov-budgets"></div>
+          <div class="ov-panel" id="ov-activity"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings page (standalone, lives outside #dashboard so it works even with no data) -->
+  <div id="settings-view" style="display:none">
+    <div class="settings-head">
+      <div class="view-title"><span class="em">⚙️</span>Settings</div>
+      <div class="muted">Import / export data, back up, and manage categories.</div>
+    </div>
+
+    <div class="panel settings-card">
+      <div class="nav-section" style="padding:0 0 10px">Data</div>
+      <div class="settings-acts">
+        <button class="side-act" id="import-btn"><span class="ico">📂</span><span id="import-label">Import CSV</span></button>
+        <button class="side-act" id="export-btn"><span class="ico">⬇️</span>Export CSV</button>
+        <button class="side-act" id="backup-btn"><span class="ico">💾</span>Backup (JSON)</button>
+        <button class="side-act" id="restore-btn"><span class="ico">♻️</span>Restore (JSON)</button>
+      </div>
+    </div>
+
+    <div class="panel settings-card" id="set-sync">
+      <div class="nav-section" style="padding:0 0 10px">Sync</div>
+      <div id="sync-status" class="muted" style="margin-bottom:10px">Checking…</div>
+      <div class="settings-acts" id="sync-acts"></div>
+    </div>
+
+    <div class="panel settings-card">
+      <div class="sec-head"><h3>My cards</h3><button class="btn-import" id="card-add-btn">+ Add card</button></div>
+      <p class="muted" style="margin:-6px 0 12px;max-width:62ch;line-height:1.55">Store your credit/debit card details for reference. ⚠️ Saved <b>unencrypted</b> in this browser and included in Backup / Sync JSON — only use on a personal device, and never store CVV you wouldn't keep in a notes app.</p>
+      <div id="cards-manager"></div>
+    </div>
+
+    <div class="panel settings-card">
+      <div class="sec-head"><h3>Categories</h3><button class="btn-import" id="cats-manage-btn">Manage categories</button></div>
+      <p class="muted" style="margin:-6px 0 0;max-width:62ch;line-height:1.55">Rename · merge · assign 50/30/20 · add/remove — <span id="cats-summary"></span></p>
+    </div>
+
+    <div class="panel settings-card">
+      <div id="set-budgets"></div>
+    </div>
+
+    <div class="panel settings-card">
+      <div class="sec-head"><h3>50/30/20</h3><button class="btn-import" id="set-class-btn">⚙️ Configure 50/30/20</button></div>
+      <div class="muted" id="set-class-status"></div>
+    </div>
+
+    <div class="panel settings-card" id="set-misclass" style="display:none"></div>
+    <div class="panel settings-card" id="set-ov-layout">
+      <div class="sec-head"><h3>Overview layout</h3></div>
+      <p class="muted" style="margin:-6px 0 8px;max-width:62ch;line-height:1.55">Drag to reorder · tick to show / hide panels on Overview. Order is saved automatically.</p>
+      <div id="ov-layout-manager"></div>
+    </div>
+    <div class="panel settings-card">
+      <div class="nav-section" style="padding:0 0 10px;color:#ef4444aa">Danger zone</div>
+      <button class="side-act danger" id="wipe-btn"><span class="ico">🗑️</span>Delete all data</button>
+    </div>
+</div>
+</main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<!-- Lightbox for full-screen image viewing -->
+<div id="img-lightbox">
+  <img id="img-lb-img" src="" alt="Full size photo">
+  <button id="img-lb-close" type="button" title="Close">✕</button>
+</div>
+
+<div id="edit-overlay" class="overlay" style="display:none">
+  <div class="modal edit-modal">
+    <h3 id="modal-title">Edit transaction</h3>
+    <div class="modal-grid">
+      <div class="modal-form">
+        <label>Name</label>
+        <input id="ef-name" type="text" autocomplete="off">
+        <label>Amount (đ)</label>
+        <input id="ef-amount" type="number" step="any" min="0" placeholder="e.g. 2000000">
+        <div id="ef-amount-warn" class="amt-warn" style="display:none"></div>
+        <label>Type</label>
+        <select id="ef-type"><option value="expense">Expense</option><option value="income">Income</option><option value="invest">Investment</option><option value="debt">Debt</option></select>
+        <label>Category</label>
+        <select id="ef-category"></select>
+        <input id="ef-category-new" type="text" placeholder="New category name" autocomplete="off" style="display:none;margin-top:6px">
+        <div id="ef-cat-suggest" class="cat-suggest" style="display:none"></div>
+        <label>Date</label>
+        <input id="ef-date" type="date">
+        <label>Payment Method</label>
+        <select id="ef-method"></select>
+        <div id="ef-install-wrap" style="display:none">
+          <label>Hình thức trả (riêng giao dịch này)</label>
+          <div class="stat-tabs" id="ef-pay-mode">
+            <button type="button" class="stat-tab active" data-mode="once">Mua trước trả sau</button>
+            <button type="button" class="stat-tab" data-mode="installment">Trả góp</button>
+          </div>
+          <div id="ef-install-row" style="display:none;margin-top:8px">
+            <label>Số tháng trả góp</label>
+            <input id="ef-install" type="number" min="2" max="36" step="1" value="3">
+          </div>
+          <div id="ef-install-hint" class="install-hint"></div>
+        </div>
+      </div>
+      <div class="modal-photo">
+        <label>Receipt / Photo</label>
+        <div id="ef-img-wrap">
+          <input id="ef-img-input" type="file" accept="image/*" style="display:none">
+          <div id="ef-img-preview" style="display:none">
+            <img id="ef-img-thumb" src="" alt="Receipt" title="Click to view full size">
+            <button id="ef-img-remove" type="button" title="Remove photo">✕</button>
+          </div>
+          <button id="ef-img-pick" type="button"><span class="img-pick-icon">📷</span>Add photo</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="ef-delete" class="btn-del">Delete</button>
+      <div style="flex:1"></div>
+      <button id="ef-cancel" class="btn-cancel">Cancel</button>
+      <button id="ef-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="budget-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3>Monthly budgets</h3>
+    <p class="muted" style="margin-bottom:10px">Set a monthly spending limit per category. Leave blank for no limit.</p>
+    <div id="budget-fields"></div>
+    <div class="modal-actions">
+      <button id="bg-suggest" class="btn-import">✨ Suggest from my spending</button>
+      <div style="flex:1"></div>
+      <button id="bg-cancel" class="btn-cancel">Cancel</button>
+      <button id="bg-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="goal-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3>🎯 Savings goal</h3>
+    <p class="muted" style="margin-bottom:10px">Enter the total you want to save. "Saved" = total income − total expenses (including money invested).</p>
+    <label>Target amount (đ)</label>
+    <input id="goal-input" type="number" min="0" step="any" placeholder="e.g. 50000000">
+    <div class="modal-actions">
+      <button id="goal-clear" class="btn-del">Clear goal</button>
+      <div style="flex:1"></div>
+      <button id="goal-cancel" class="btn-cancel">Cancel</button>
+      <button id="goal-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="plan-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3 id="plan-title">Saving plan</h3>
+    <p class="muted" style="margin-bottom:10px">Track a saving plan with a target. Update “Saved” whenever you put money aside.</p>
+    <label>Plan name</label>
+    <input id="pf-name" type="text" autocomplete="off" placeholder="e.g. Emergency fund">
+    <label>Icon (emoji)</label>
+    <input id="pf-icon" type="text" autocomplete="off" maxlength="2" placeholder="🛟">
+    <label>Saved (đ)</label>
+    <input id="pf-saved" type="number" min="0" step="any" placeholder="e.g. 5000000">
+    <label>Target (đ)</label>
+    <input id="pf-target" type="number" min="0" step="any" placeholder="e.g. 10000000">
+    <label>Color</label>
+    <select id="pf-color">
+      <option value="#22c55e">Green</option>
+      <option value="#14b8a6">Teal</option>
+      <option value="#3b82f6">Blue</option>
+      <option value="#7c5cd6">Purple</option>
+      <option value="#f59e0b">Amber</option>
+      <option value="#ec4899">Pink</option>
+    </select>
+    <div class="modal-actions">
+      <button id="pf-delete" class="btn-del">Delete</button>
+      <div style="flex:1"></div>
+      <button id="pf-cancel" class="btn-cancel">Cancel</button>
+      <button id="pf-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="debt-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3 id="debt-title">Debt & Credit Card</h3>
+    <p class="muted" style="margin-bottom:10px">Track your credit cards, loans you owe, or money owed to you.</p>
+    
+    <label>Type</label>
+    <select id="df-type">
+      <option value="credit-card">💳 Credit card</option>
+      <option value="i-owe">💸 I owe</option>
+      <option value="they-owe">💰 They owe</option>
+    </select>
+    
+    <label>Name</label>
+    <input id="df-name" type="text" autocomplete="off" placeholder="e.g. VPBank, Anh Nam">
+    
+    <label>Amount (đ)</label>
+    <input id="df-amount" type="number" min="0" step="any" placeholder="e.g. 10000000">
+    
+    <div id="df-recurring-wrap" style="margin-top:14px;margin-bottom:5px">
+      <label style="display:inline-flex;align-items:center;gap:6px;text-transform:none;font-size:12px;cursor:pointer;margin:0">
+        <input id="df-recurring" type="checkbox" style="width:auto;margin:0"> Monthly recurring due date
+      </label>
+    </div>
+    
+    <div id="df-due-date-wrap">
+      <label>Due date</label>
+      <input id="df-due-date" type="date">
+    </div>
+    
+    <div id="df-due-day-wrap" style="display:none">
+      <label>Due day of month (1-31)</label>
+      <input id="df-due-day" type="number" min="1" max="31" placeholder="e.g. 25">
+    </div>
+    
+    <label>Note / Reminder</label>
+    <input id="df-note" type="text" autocomplete="off" placeholder="e.g. Min payment 5%">
+    
+    <div id="df-autolog-wrap" style="margin-top:14px;margin-bottom:5px">
+      <label style="display:inline-flex;align-items:center;gap:6px;text-transform:none;font-size:12px;cursor:pointer;margin:0">
+        <input id="df-autolog" type="checkbox" style="width:auto;margin:0"> Auto-log to transactions when marked paid
+      </label>
+    </div>
+    
+    <div class="modal-actions">
+      <button id="df-delete" class="btn-del">Delete</button>
+      <div style="flex:1"></div>
+      <button id="df-cancel" class="btn-cancel">Cancel</button>
+      <button id="df-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="class-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3>⚖️ Configure 50/30/20</h3>
+    <p class="muted" style="margin-bottom:10px">Set your monthly base income and assign each expense category to <b style="color:#4f6bb0">Needs</b> (50%) or <b style="color:#b5852a">Wants</b> (30%). The <b style="color:#2f7d4f">Savings</b> (20%) bucket is derived = income − expenses.</p>
+    <label>Base income / month (đ)</label>
+    <input id="class-income" type="number" min="0" step="any" placeholder="e.g. 20000000">
+    <label style="margin-top:14px">Classify expense categories</label>
+    <div id="class-fields"></div>
+    <div class="modal-actions">
+      <button id="class-suggest" class="btn-import">✨ Suggest classification</button>
+      <div style="flex:1"></div>
+      <button id="class-cancel" class="btn-cancel">Cancel</button>
+      <button id="class-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="cats-overlay" class="overlay" style="display:none">
+  <div class="modal cats-modal">
+    <h3>🏷️ Manage categories</h3>
+    <p class="muted" style="margin-bottom:10px">Rename (type then blur) · merge (Move to…) · assign 50/30/20 · add/remove. Changes save automatically.</p>
+    <div id="cat-manager"></div>
+    <div class="modal-actions">
+      <div style="flex:1"></div>
+      <button id="cats-done" class="btn-save">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="card-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3 id="card-title">Add card</h3>
+    <p class="muted" style="margin-bottom:10px">⚠️ Stored unencrypted in this browser and in Backup / Sync files. Personal device only.</p>
+    <label>Card label</label>
+    <input id="cf-label" type="text" autocomplete="off" placeholder="e.g. VPBank Visa">
+    <label>Cardholder name</label>
+    <input id="cf-holder" type="text" autocomplete="off" placeholder="e.g. PHAM QUANG VINH">
+    <label>Card number</label>
+    <input id="cf-number" type="text" inputmode="numeric" autocomplete="off" placeholder="e.g. 4111 1111 1111 1111">
+    <div style="display:flex;gap:10px">
+      <div style="flex:1"><label>Expiry (MM/YY)</label><input id="cf-expiry" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="MM/YY"></div>
+      <div style="flex:1"><label>CVV</label><input id="cf-cvv" type="text" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="•••"></div>
+    </div>
+    <div style="display:flex;gap:10px">
+      <div style="flex:1"><label>Statement day (1–31)</label><input id="cf-statement" type="number" inputmode="numeric" autocomplete="off" min="1" max="31" placeholder="e.g. 25"></div>
+      <div style="flex:1"><label>Payment due day (1–31)</label><input id="cf-due" type="number" inputmode="numeric" autocomplete="off" min="1" max="31" placeholder="e.g. 10"></div>
+    </div>
+    <label>Color</label>
+    <select id="cf-color">
+      <option value="#2f5e4f">Forest</option>
+      <option value="#1f2937">Charcoal</option>
+      <option value="#141414">Leo Black</option>
+      <option value="#3b5b8c">Blue</option>
+      <option value="#7c5cd6">Purple</option>
+      <option value="#b5852a">Gold</option>
+      <option value="#9c3a5b">Maroon</option>
+    </select>
+    <div class="modal-actions">
+      <button id="cf-delete" class="btn-del">Delete</button>
+      <div style="flex:1"></div>
+      <button id="cf-cancel" class="btn-cancel">Cancel</button>
+      <button id="cf-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="restore-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3>♻️ Restore from backup</h3>
+    <p class="muted" id="restore-summary" style="margin-bottom:8px;color:var(--text-2);line-height:1.5"></p>
+    <p class="muted">Restore only <b style="color:var(--text)">merges in</b> new records — it never deletes existing data. Budgets / goals in the file (if any) overwrite your current settings.</p>
+    <div class="modal-actions">
+      <div style="flex:1"></div>
+      <button id="restore-cancel" class="btn-cancel">Cancel</button>
+      <button id="restore-confirm" class="btn-save">Restore</button>
+    </div>
+  </div>
+</div>
+
+<div id="export-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3>⬇️ Export CSV</h3>
+    <p class="muted" style="margin-bottom:12px">Choose which data to export to a CSV file.</p>
+    <button class="side-act" id="exp-all" style="margin-bottom:8px"><span class="ico">🗂️</span><span id="exp-all-label">All</span></button>
+    <button class="side-act" id="exp-view"><span class="ico">🔎</span><span id="exp-view-label">Current tab</span></button>
+    <div class="modal-actions">
+      <div style="flex:1"></div>
+      <button id="exp-cancel" class="btn-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="wipe-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3 style="color:#ef4444">🗑️ Delete all data?</h3>
+    <p class="muted" style="margin-bottom:10px;line-height:1.6">This <b style="color:#ef4444">permanently deletes</b> every transaction (expense / income / investment) along with budgets, goals, and 50/30/20 settings. <b style="color:#ef4444">This cannot be undone.</b></p>
+    <p class="muted" id="wipe-count" style="margin-bottom:10px;color:var(--text-2)"></p>
+    <p class="muted" style="margin-bottom:4px;color:#f59e0b;line-height:1.5">💡 Consider <b>Backup</b> before deleting so you can sync / restore later.</p>
+    <div class="modal-actions">
+      <div style="flex:1"></div>
+      <button id="wipe-cancel" class="btn-cancel">Cancel</button>
+      <button id="wipe-confirm" class="btn-del" style="background:#ef4444;color:#fff;border-color:#ef4444">Delete all</button>
+    </div>
+  </div>
+</div>
+
+<script src="spendy.js"></script>
+</body>
+</html>

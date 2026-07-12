@@ -1,0 +1,32 @@
+# Local backups / exports
+backup/
+spendy-sync.json
+data/
+
+# Local agent/codegraph/index scratch
+.codegraph/
+.claude/
+tasks/
+screenshots/
+idea/
+
+# Temporary / verification artifacts
+*verify-overview-restore*
+*verify_cards*
+*verify_creditcards*
+*verify_autocc*
+*verify_dedup*
+_analyze.py
+_search.txt
+_css_ov.txt
+
+# Local notes
+NOTES.md
+TODO.md
+CLAUDE.md
+
+# OS junk
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
