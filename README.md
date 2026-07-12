@@ -1,10 +1,10 @@
 ```text
-███████╗██████╗ ███████╗██████╗  ██████╗ ██╗    ██╗███████╗██████╗  ██████╗
-██╔════╝██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║    ██║██╔════╝██╔══██╗██╔═══██╗
-█████╗  ██████╔╝█████╗  ██████╔╝██║   ██║██║ █╗ ██║█████╗  ██████╔╝██║   ██║
-██╔══╝  ██╔══██╗██╔══╝  ██╔══██╗██║   ██║██║███╗██║██╔══╝  ██╔══██╗██║   ██║
-██║     ██║  ██║███████╗██║  ██║╚██████╔╝╚███╔███╔╝███████╗██║  ██║╚██████╔╝
-╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝
+███████╗██████╗ ███████╗██████╗ ██████╗ ██╗ ██╗███████╗██████╗ ██████╗
+██╔════╝██╔══██╗██╔════╝██╔══██╗██╔═══██╗██║ ██║██╔════╝██╔══██╗██╔═══██╗
+█████╗ ██████╔╝█████╗ ██████╔╝██║ ██║██║ █╗ ██║█████╗ ██████╔╝██║ ██║
+██╔══╝ ██╔══██╗██╔══╝ ██╔══██╗██║ ██║██║███╗██║██╔══╝ ██╔══██╗██║ ██║
+██║ ██║ ██║███████╗██║ ██║╚██████╔╝╚███╔███╔╝███████╗██║ ██║╚██████╔╝
+╚═╝ ╚═╝ ╚═╝╚══════╝╚═╝ ╚═╝ ╚═════╝ ╚══╝╚══╝ ╚══════╝╚═╝ ╚═╝ ╚═════╝
 ```
 
 Ứng dụng theo dõi chi tiêu **không cần build** — mở `Spendy.html` là dùng được ngay.
@@ -14,6 +14,24 @@
 - Mở trực tiếp `Spendy.html` trong trình duyệt.
 - Không cần `npm`, server hay build step.
 - Kiểm tra cú pháp: `node --check spendy.js`
+
+## Kiến trúc
+
+Ứng dụng **client-only**, không backend bắt buộc.
+
+```text
+[CSV/JSON] → PapaParse / makeRecord
+    ↓
+[IndexedDB: expenses + meta]
+    ↓
+[spendy.js state] → render() → DOM + Chart.js
+```
+
+- Giao diện: `Spendy.html`
+- Logic: `spendy.js` ≈ 3.5k dòng
+- Lưu trữ: IndexedDB (`fingerprint` chống trùng)
+- Theme: CSS variables + `localStorage` (`spendy-theme`)
+- Tính toán: budgets / 50/30/20 / notification đều từ state trong bộ nhớ
 
 ## Repo này bao gồm gì
 
@@ -43,5 +61,3 @@
 - **Notification**: countdown hạn thẻ, vượt budget, đạt saving plan goal
 - **Chủ đề sáng/tối** qua CSS variables; biểu đồ lấy màu từ `cssVar('--…')`
 - **Tuỳ chỉnh Dashboard**: `overviewWidgets` lưu thứ tự + hiển thị panel
-
-<!-- paired -->
