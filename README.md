@@ -43,3 +43,5 @@
 - **Notification**: countdown hạn thẻ, vượt budget, đạt saving plan goal
 - **Chủ đề sáng/tối** qua CSS variables; biểu đồ lấy màu từ `cssVar('--…')`
 - **Tuỳ chỉnh Dashboard**: `overviewWidgets` lưu thứ tự + hiển thị panel
+
+<!-- paired -->
