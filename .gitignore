@@ -1,6 +1,7 @@
 # Local backups / exports
 backup/
 spendy-sync.json
+spendy-db.js
 data/
 
 # Local agent/codegraph/index scratch
@@ -30,3 +31,44 @@ Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 *.lnk
+
+# ---------------------------------------------------------------------------
+# Server deployment (docker-compose mounts ./data as $SPENDY_DATA)
+# ---------------------------------------------------------------------------
+# data/ is already ignored above; these rules make sure nothing the server writes
+# can slip into git even if it lands somewhere else (a test run, another box, a
+# subdirectory). All of it is real financial data — transactions, receipt photos,
+# and card numbers + CVV stored unencrypted in the meta table.
+
+# SQLite database created by the server, plus its WAL sidecars. The -wal file holds
+# committed rows that are not in the .db yet, so it is just as sensitive.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Attachment image blobs ($SPENDY_DATA/images/<hh>/<hash>.<ext>) and the staging area
+# used by POST /api/restore/stage before a restore is committed.
+data/images/
+data/tmp/
+
+# Backups pulled out of the server: GET /api/backup.zip, GET /api/backup.json, and
+# cold tar copies of ./data. These contain card numbers and CVV in the clear —
+# encrypt them before they touch any cloud drive.
+spendy-backup*.zip
+spendy-backup*.json
+spendy-data-*.tar.gz
+
+# Chart.js / PapaParse are vendored INSIDE the image at build time (see Dockerfile).
+# If anyone fetches them locally for testing, they stay out of the repo.
+vendor/
+
+# Local deployment knobs (SPENDY_BIND, SPENDY_UID/GID, TZ) — machine specific.
+.env
+!.env.example
+docker-compose.override.yml
+
+# Python bytecode from server/
+__pycache__/
+*.py[cod]

@@ -1,5 +1,3 @@
-const DB_NAME = 'spendy';
-const STORE = 'expenses';
 // Muted editorial data-viz palette — desaturated greens/clays/indigos/ochres that sit quietly
 // against the warm-monochrome shell (charts + category dots draw from this in order).
 const NICE_COLORS = ['#2f7d4f','#bd5a3a','#5b58c4','#b5852a','#3f8f93','#9a5b8e','#6f7d3a','#c27a4e','#4f6bb0','#8a6f54','#5aa07a','#a4524a','#7a6cae','#5e8a4c','#b08a3e','#6b6f78'];
@@ -128,7 +126,11 @@ let notifOpen = false;      // notification dropdown (top toolbar bell) open/clo
 let editingPlanId = null;   // id of the saving plan being edited in the plan modal, or null when adding
 let debts = [];             // Overview debts list — array in IndexedDB 'meta'
 let ccPaidFps = [];         // fingerprints of credit-card transactions ticked "paid" (reminder only; meta 'ccPaidFps')
-let ccNoteFps = {};          // { fingerprint: 'YYYY-MM-DD' } confirm note date for credit-card transactions (meta 'ccNoteFps')
+let ccPaidAt = {};          // { paidKey: 'YYYY-MM-DD' } the day each paid tick was pressed — shown in the "Paid on" column (meta 'ccPaidAt')
+let ccNoteFps = {};         // DORMANT: old per-txn "Confirm" note dates (meta 'ccNoteFps'). The column now shows ccPaidAt;
+                            // kept loaded + in Backup/Sync so existing note data isn't destroyed. No UI reads it.
+let catOk = [];             // "đúng chỗ rồi" confirmations: keys `${norm(name)}|${category}` the user vouched for — meta 'catOk'.
+                            // renderMisclass skips them, so a suggestion you've dismissed never comes back for that name+category.
 let cards = [];             // Saved card details (Settings → My cards) — array in meta 'cards'; stored UNENCRYPTED
 let editingCardId = null;   // id of the card being edited in the card modal, or null when adding
 let revealedCards = new Set(); // ids of saved cards whose number/CVV are currently revealed (UI only, not persisted)
@@ -136,32 +138,53 @@ let pinnedCardId = null;    // id of the card featured on the Overview "card" (m
 let editingDebtId = null;   // id of the debt being edited in the debt modal, or null when adding
 let ovWidgets = null;       // Overview dashboard layout: [{id, visible}]; null until loaded from meta 'overviewWidgets'
 
+// Which Overview column each panel starts in. The user can drag a panel to another column in
+// Settings → Overview layout; the chosen column is saved per widget (`col`) and applied by applyOvLayout.
 const OV_WIDGET_COLS = {
   left:   ['card','plans','fifty'],
   mid:    ['stats','cashflow','recent'],
   right:  ['stat','budgets','activity'],
 };
-const DEFAULT_OV_WIDGETS = ['card','plans','fifty','stats','cashflow','recent','stat','budgets','activity'].map(id => ({id, visible: true}));
+const OV_COL_KEYS = ['left','mid','right'];
+const OV_COL_LABEL = { left:'Left', mid:'Middle', right:'Right' };
+// widget id → the element in #overview-view it controls (used for show/hide AND for moving/reordering panels).
+const OV_WIDGET_EL = {
+  card:'balance-card', plans:'saving-plans', fifty:'ov-fifty',
+  stats:'ov-cards', cashflow:'ov-flow-panel', recent:'recent-tx',
+  stat:'ov-stat-panel', budgets:'ov-budgets', activity:'ov-activity',
+};
+const OV_WIDGET_LABEL = {
+  card:'Pinned card', plans:'Saving Plans', fifty:'50/30/20', stats:'Stat cards',
+  cashflow:'Cashflow', recent:'Recent', stat:'Statistic', budgets:'Budgets', activity:'Activity',
+};
+const OV_WIDGET_ICON = {
+  card:'💳', plans:'🎯', fifty:'⚖️', stats:'🔢', cashflow:'📈', recent:'🧾', stat:'🍩', budgets:'📊', activity:'⏱️',
+};
+const ovDefaultCol = id => OV_COL_KEYS.find(c => OV_WIDGET_COLS[c].includes(id)) || 'left';
+const DEFAULT_OV_WIDGETS = ['card','plans','fifty','stats','cashflow','recent','stat','budgets','activity']
+  .map(id => ({ id, visible: true, col: ovDefaultCol(id) }));
+// Accept anything previously saved (older builds stored {id,visible} with no column) and fill the gaps:
+// unknown/missing ids are appended, extra ids dropped, so the list always covers every widget exactly once.
+function normalizeOvWidgets(raw) {
+  const byId = new Map();
+  if (Array.isArray(raw)) {
+    for (const w of raw) {
+      if (!w || typeof w.id !== 'string' || !OV_WIDGET_EL[w.id] || byId.has(w.id)) continue;
+      byId.set(w.id, { id: w.id, visible: w.visible !== false, col: OV_COL_KEYS.includes(w.col) ? w.col : ovDefaultCol(w.id) });
+    }
+  }
+  const out = [...byId.values()];
+  DEFAULT_OV_WIDGETS.forEach(d => { if (!byId.has(d.id)) out.push({ ...d }); });
+  return out;
+}
 function getOvWidgets() {
-  if (!Array.isArray(ovWidgets) || !ovWidgets.length) return DEFAULT_OV_WIDGETS.slice();
-  return ovWidgets.slice();
+  if (!Array.isArray(ovWidgets) || !ovWidgets.length) return DEFAULT_OV_WIDGETS.map(w => ({ ...w }));
+  return normalizeOvWidgets(ovWidgets);
 }
 async function persistOvWidgets() {
   const db = await openDB();
   await putMeta(db, 'overviewWidgets', ovWidgets);
   db.close();
-}
-async function reorderOvWidgets(id, dir) {
-  const list = getOvWidgets();
-  const i = list.findIndex(w => w.id === id);
-  const j = i + (dir === 'up' ? -1 : 1);
-  if (i < 0 || j < 0 || j >= list.length) return;
-  [list[i], list[j]] = [list[j], list[i]];
-  ovWidgets = list;
-  await persistOvWidgets();
-  renderOvLayoutSettings();
-  renderOverview();
-  scheduleSyncPush();
 }
 const monthFilter = document.getElementById('month-filter');
 const methodFilter = document.getElementById('method-filter');
@@ -188,82 +211,125 @@ const efInstall = document.getElementById('ef-install'); // "Trả góp (số th
 let editingId = null; // id of record being edited, or null when adding a new one
 let pendingImage = null; // base64 image for the record being edited/added, or null
 
-// --- IndexedDB ---
-function openDB() {
-  return new Promise((res, rej) => {
-    const req = indexedDB.open(DB_NAME, 2);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        const store = db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
-        store.createIndex('fingerprint', 'fingerprint', { unique: true });
-      }
-      if (!db.objectStoreNames.contains('meta')) {
-        db.createObjectStore('meta', { keyPath: 'key' }); // key/value config (e.g. budgets)
-      }
-    };
-    req.onsuccess = e => res(e.target.result);
-    req.onerror = e => rej(e.target.error);
-    req.onblocked = () => rej(new Error('Database upgrade blocked — close other Spendy tabs and reload')); // otherwise the promise (and every awaited DB op) hangs forever
-  });
+// --- Server storage (contract: docs/API.md) ---
+// Spendy used to keep everything in IndexedDB. It is now SERVER-AUTHORITATIVE: the browser holds no durable
+// state at all, and every read/write is an HTTP call to the Python + SQLite server that also serves this file.
+// The old helper NAMES are kept as a thin facade over fetch() so the ~40 call sites scattered through this
+// file didn't have to move when the store did — `openDB()` hands back a vestigial handle purely so that
+// `const db = await openDB()` still reads naturally where it already appears.
+let metaCache = {};      // server meta, refreshed on every /api/state; getMeta() reads this instead of a round-trip
+let rowCache = [];       // raw rows from the last /api/state, handed back by getAll()
+let connState = 'boot';  // 'boot' | 'ok' | 'busy' | 'error' — drives the sidebar connection pill
+
+const CONN_TEXT = {
+  boot:  ['⋯', 'Đang kết nối…'],
+  ok:    ['●', 'Đã lưu trên server'],
+  busy:  ['⋯', 'Đang lưu…'],
+  error: ['⚠', 'Mất kết nối server'],
+};
+function setConn(state, detail) {
+  connState = state;
+  const el = document.getElementById('conn-pill');
+  if (!el) return;
+  const [dot, label] = CONN_TEXT[state] || CONN_TEXT.ok;
+  const text = (state === 'error' && detail) ? detail : label;
+  el.className = 'conn-pill ' + state;
+  el.innerHTML = `<span class="conn-dot">${dot}</span><span class="conn-label">${esc(text)}</span>`;
+  el.title = state === 'error' ? 'Thay đổi gần nhất CHƯA được lưu. Kiểm tra server rồi thử lại.' : text;
 }
 
-function getMeta(db, key) {
-  return new Promise((res, rej) => {
-    const req = db.transaction('meta', 'readonly').objectStore('meta').get(key);
-    req.onsuccess = () => res(req.result ? req.result.value : null);
-    req.onerror = () => rej(req.error);
-  });
-}
-function putMeta(db, key, value) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction('meta', 'readwrite');
-    tx.objectStore('meta').put({ key, value });
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-
-function getAll(db) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readonly');
-    const req = tx.objectStore(STORE).getAll();
-    req.onsuccess = () => res(req.result);
-    req.onerror = () => rej(req.error);
-  });
-}
-
-function getFingerprints(db) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readonly');
-    // Iterate the 'fingerprint' index with a KEY cursor so we collect each entry's INDEX key (the fingerprint
-    // string). NB: idx.getAllKeys() returns PRIMARY keys (record ids), not the fingerprints — using it here made
-    // `existing.has(fingerprint)` a silent no-op across import/restore/sync (dedup then leaned entirely on the
-    // unique index throwing on add). The cursor returns the actual fingerprint strings.
-    const req = tx.objectStore(STORE).index('fingerprint').openKeyCursor();
-    const out = new Set();
-    req.onsuccess = () => { const c = req.result; if (c) { out.add(c.key); c.continue(); } else res(out); };
-    req.onerror = () => rej(req.error);
-  });
+// Every request funnels through here. With no local store there is no second chance to flush a write later,
+// so a call that doesn't reach the server has to reach the user — silence would look exactly like success.
+async function apiFetch(path, { method = 'GET', body, headers } = {}) {
+  const opts = { method, headers: Object.assign({}, headers) };
+  if (body !== undefined) {
+    if (typeof body === 'string' || body instanceof Blob || body instanceof ArrayBuffer || body instanceof File) opts.body = body;
+    else { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
+  }
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    setConn('error', 'Không gọi được server');
+    const err = new Error('network'); err.name = 'NetworkError'; throw err;
+  }
+  let data = null;
+  if ((res.headers.get('content-type') || '').includes('application/json')) {
+    try { data = await res.json(); } catch (e) { data = null; }
+  }
+  if (!res.ok) {
+    const code = (data && data.error) || `http_${res.status}`;
+    const err = new Error((data && data.detail) || code);
+    // Duplicate fingerprints kept their IndexedDB-era name so the existing catch blocks read the same.
+    err.name = code === 'duplicate' ? 'ConstraintError' : 'ApiError';
+    err.code = code; err.status = res.status; err.data = data;
+    if (res.status >= 500) setConn('error', `Server lỗi ${res.status}`);
+    throw err;
+  }
+  if (connState !== 'ok') setConn('ok');
+  return data;
 }
 
-function putRecord(db, rec) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(rec); // put = insert (no id) or update (existing id)
-    tx.oncomplete = () => res();
-    tx.onabort = () => rej(tx.error || new Error('aborted'));
-    tx.onerror = () => rej(tx.error);
-  });
+function openDB() { return Promise.resolve({ close() {} }); } // storage lives on the server; the handle is vestigial
+
+// Acting before the first /api/state lands would run against an empty snapshot — an import would dedup
+// against no fingerprints at all, and the editor's duplicate pre-check would see no rows.
+function requireLoaded() {
+  if (isLoaded) return true;
+  toast('Đang tải dữ liệu từ server — thử lại sau một giây', 'warn');
+  return false;
 }
 
-function deleteRecord(db, id) {
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).delete(id);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
+function getMeta(_db, key) { return Promise.resolve(metaCache[key] === undefined ? null : metaCache[key]); }
+
+// The cache is updated only AFTER the server confirms. Updating it first would make a failed write
+// indistinguishable from a successful one — the UI would render the new budget/pin/tick and quietly lose it
+// on the next load.
+async function putMeta(_db, key, value) {
+  await apiFetch('/api/meta/' + encodeURIComponent(key), { method: 'PUT', body: { value } });
+  metaCache[key] = value;
+}
+
+// Several settings are written in pairs (ccPaidFps + ccPaidAt, catClass + incomeBase). One request keeps
+// them from landing half-applied.
+async function putMetaBulk(obj) {
+  await apiFetch('/api/meta', { method: 'PUT', body: { meta: obj } });
+  Object.assign(metaCache, obj);
+}
+
+function getAll(_db) { return Promise.resolve(rowCache); }
+
+// Always asked fresh: dedup for import/restore has to see what the server holds right now, not a snapshot
+// from page load (another device may have added rows since).
+async function getFingerprints(_db) {
+  const r = await apiFetch('/api/fingerprints');
+  return new Set(r.fingerprints || []);
+}
+
+// put = insert (no id) or update (existing id), mirroring the IndexedDB call it replaces.
+async function putRecord(_db, rec) {
+  const r = rec.id != null
+    ? await apiFetch('/api/records/' + encodeURIComponent(rec.id), { method: 'PUT', body: rec })
+    : await apiFetch('/api/records', { method: 'POST', body: rec });
+  return r && r.record;
+}
+
+async function deleteRecord(_db, id) {
+  await apiFetch('/api/records/' + encodeURIComponent(id), { method: 'DELETE' });
+}
+
+// The one transactional batch write — CSV import, restore-commit and the legacy-installment merge all go
+// through it. Duplicate fingerprints are skipped server-side (the old swallowed-ConstraintError behaviour);
+// anything else rolls the whole batch back rather than committing half of it.
+async function bulkWrite(add, deleteIds) {
+  return await apiFetch('/api/records/bulk', { method: 'POST', body: { add: add || [], deleteIds: deleteIds || [] } });
+}
+
+// An attachment is a content hash on the server. A `data:` URL still shows up for an image the user just
+// picked (not saved yet) and inside legacy backups, so both shapes have to render.
+function imgSrc(v) {
+  if (!v) return '';
+  return String(v).startsWith('data:') ? v : '/api/images/' + encodeURIComponent(v);
 }
 
 // --- CSV Parsing ---
@@ -423,23 +489,43 @@ async function mergeLegacyInstallments(db, rows) {
     }
   }
   if (!toAdd.length) return false;
-  const tx = db.transaction(STORE, 'readwrite'); const store = tx.objectStore(STORE);
-  toDelete.forEach(id => store.delete(id));
+  // One server transaction: the split rows are deleted and the merged record inserted together, so a failure
+  // can never leave the parts deleted with no replacement.
   let added = 0;
-  toAdd.forEach(r => { const rq = store.add(r); rq.onsuccess = () => added++; rq.onerror = e => { if (rq.error && rq.error.name === 'ConstraintError') e.preventDefault(); }; });
-  await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error || new Error('transaction aborted')); });
+  try {
+    const r = await bulkWrite(toAdd, toDelete);
+    added = (r && r.added) || 0;
+  } catch (e) {
+    console.warn('installment merge failed:', e);
+    return false;
+  }
   if (added) setTimeout(() => toast(`Gộp ${added} khoản trả góp thành dòng đơn`, 'success'), 800);
   if (added && paidChanged) await putMeta(db, 'ccPaidFps', [...new Set([...paidSet, ...newPaid])]); // loadFromDB reads this back right after
   return added > 0;
 }
+// The single startup read (and the reload after every mutation): one GET /api/state carries every record
+// plus the whole meta block, so the rest of the app keeps working off in-memory state exactly as before.
 async function loadFromDB() {
   const db = await openDB();
-  let rows = await getAll(db);
+  let state;
+  try {
+    state = await apiFetch('/api/state');
+  } catch (e) {
+    // Server-authoritative means there is no offline fallback to degrade into — say so plainly instead of
+    // rendering an empty app that looks like the data is gone.
+    setConn('error', 'Không kết nối được server');
+    showConnError(e);
+    return;
+  }
+  rowCache = state.records || [];
+  metaCache = state.meta || {};
+  isLoaded = true; // gates the actions that would otherwise run against an empty in-memory snapshot
+  let rows = rowCache;
   // One-time merge of legacy SPLIT installments ("Name (k/N)" rows) back into one record carrying `installments`.
   if (!(await getMeta(db, 'mergedInstallments'))) {
     const did = await mergeLegacyInstallments(db, rows);
     await putMeta(db, 'mergedInstallments', true);
-    if (did) rows = await getAll(db);
+    if (did) { const s2 = await apiFetch('/api/state'); rowCache = s2.records || []; metaCache = s2.meta || {}; rows = rowCache; }
   }
   budgets = (await getMeta(db, 'budgets')) || {};
   goal = (await getMeta(db, 'goal')) || 0;
@@ -449,12 +535,12 @@ async function loadFromDB() {
   plans = (await getMeta(db, 'plans')) || null; // null → getPlans() shows DEFAULT_PLANS until edited
   debts = (await getMeta(db, 'debts')) || [];
   ccPaidFps = (await getMeta(db, 'ccPaidFps')) || [];
+  ccPaidAt = (await getMeta(db, 'ccPaidAt')) || {};
+  catOk = (await getMeta(db, 'catOk')) || [];
   ccNoteFps = (await getMeta(db, 'ccNoteFps')) || {};
   cards = (await getMeta(db, 'cards')) || [];
   pinnedCardId = (await getMeta(db, 'pinnedCard')) || null;
-  const rawWidgets = await getMeta(db, 'overviewWidgets');
-  if (Array.isArray(rawWidgets) && rawWidgets.length === DEFAULT_OV_WIDGETS.length && rawWidgets.every(w => w && w.id && typeof w.visible === 'boolean')) ovWidgets = rawWidgets;
-  else ovWidgets = DEFAULT_OV_WIDGETS.map(w => ({ ...w }));
+  ovWidgets = normalizeOvWidgets(await getMeta(db, 'overviewWidgets')); // fills in `col` for lists saved before columns were movable
   // One-time date repair (idempotent). Older imports parsed non-ISO dates like Notion's "March 19, 2026"
   // as LOCAL midnight, then derived dateStr via toISOString() (UTC) — rolling the day back by one in any
   // timezone ahead of UTC (e.g. UTC+7 Vietnam). The stored `date` INSTANT is correct (it is local midnight
@@ -492,15 +578,23 @@ async function loadFromDB() {
   }
   if (dateFixed) setTimeout(() => toast(`Realigned dates on ${dateFixed} transaction(s)${dateSkipped ? ` · ${dateSkipped} skipped as duplicates` : ''}`, 'success'), 700);
   // Date repair changed some fingerprints; ccPaidFps keys (fingerprint or fingerprint#k) must follow so a paid credit-card charge stays paid.
-  if (Array.isArray(ccPaidFps) && ccPaidFps.length && Object.keys(fpRemap).length) {
-    let ccChanged = false;
-    const remapped = ccPaidFps.map(k => {
-      if (fpRemap[k]) { ccChanged = true; return fpRemap[k]; }              // bare fingerprint (also matches names containing '#')
+  if (Object.keys(fpRemap).length) {
+    const remapKey = k => {
+      if (fpRemap[k]) return fpRemap[k];                                    // bare fingerprint (also matches names containing '#')
       const m = k.match(/^(.*)#(\d+)$/);                                    // installment period key: fingerprint#k (k is digits; dateStr has no '#')
-      if (m && fpRemap[m[1]]) { ccChanged = true; return fpRemap[m[1]] + '#' + m[2]; }
-      return k;
-    });
-    if (ccChanged) { ccPaidFps = [...new Set(remapped)]; await putMeta(db, 'ccPaidFps', ccPaidFps); }
+      return (m && fpRemap[m[1]]) ? fpRemap[m[1]] + '#' + m[2] : k;
+    };
+    if (Array.isArray(ccPaidFps) && ccPaidFps.length) {
+      const remapped = ccPaidFps.map(remapKey);
+      if (remapped.some((k, i) => k !== ccPaidFps[i])) { ccPaidFps = [...new Set(remapped)]; await putMeta(db, 'ccPaidFps', ccPaidFps); }
+    }
+    // The "Paid on" dates hang off the same keys — move them together or the tick keeps its date but loses its label.
+    const atKeys = Object.keys(ccPaidAt || {});
+    if (atKeys.length) {
+      const next = {}; let atChanged = false;
+      atKeys.forEach(k => { const nk = remapKey(k); if (nk !== k) atChanged = true; next[nk] = ccPaidAt[k]; });
+      if (atChanged) { ccPaidAt = next; await putMeta(db, 'ccPaidAt', ccPaidAt); }
+    }
   }
   allData = rows.map(r => ({
     ...r,
@@ -512,6 +606,8 @@ async function loadFromDB() {
 }
 
 function rebuild() {
+  const loading = document.getElementById('loading-state');
+  if (loading) loading.style.display = 'none'; // the first successful /api/state got us here
   const settingsView = document.getElementById('settings-view');
   const debtsView = document.getElementById('debts-view');
   if (view === 'settings') {
@@ -682,15 +778,18 @@ function renderDebtTotals(data) {
 async function markDebtGroupPaid(fps) {
   if (!fps || !fps.length) return;
   if (!Array.isArray(ccPaidFps)) ccPaidFps = [];
+  if (!ccPaidAt || typeof ccPaidAt !== 'object') ccPaidAt = {};
   const set = new Set(ccPaidFps);
-  fps.forEach(fp => set.add(fp));
+  const today = localDateStr(new Date());
+  fps.forEach(fp => { set.add(fp); ccPaidAt[fp] = today; }); // same day-stamp the table's "Paid on" column reads
   ccPaidFps = [...set];
   const db = await openDB();
-  await putMeta(db, 'ccPaidFps', ccPaidFps);
+  // One request for both: a tick and the date it was ticked must never land separately.
+  await putMetaBulk({ ccPaidFps, ccPaidAt });
   db.close();
   toast(`Marked ${fps.length} transaction(s) paid`, 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 function render() {
@@ -799,7 +898,7 @@ function render() {
       .concat(tableCats.map(c => `<option value="${esc(c)}"${c===tableCat?' selected':''}>${esc(c)}</option>`)).join('');
     let html = `<div class="table-bar"><label>Category:</label><select onchange="window.tcf(this.value)">${catOpts}</select><span class="table-bar-count">${td.length} of ${data.length} shown</span></div>`;
     const isDebts = view === 'debts';
-    html += `<table><thead><tr><th>#</th><th>Name</th><th>Amount</th><th>Category</th><th>Date</th><th>Method</th><th>Confirm</th>${isDebts ? '<th style="text-align:center">Paid</th>' : ''}</tr></thead><tbody>`;
+    html += `<table><thead><tr><th>#</th><th>Name</th><th>Amount</th><th>Category</th><th>Date</th><th>Method</th>${isDebts ? '<th style="text-align:center">Paid on</th><th style="text-align:center">Paid</th>' : ''}</tr></thead><tbody>`;
     const amtStyle = meta.amtColor ? ` style="color:${meta.amtColor}"` : '';
     const sign = meta.amtColor ? '+' : '';
     pd.forEach((d,i) => {
@@ -810,16 +909,20 @@ function render() {
       // strikethrough) — consistent with toggleCcPaidTxn ticking only that period. Otherwise the whole record.
       const selPeriod = (instPeriods && tableDebtSel && tableDebtSel.sel && tableDebtSel.sel.kind === 'cycle')
         ? instPeriods.find(p => p.ym === tableDebtSel.sel.ym) : null;
-      const paid = isDebts && (selPeriod ? ccPaidFps.includes(`${d.fingerprint}#${selPeriod.k}`) : paidKeysFor(d).every(k => ccPaidFps.includes(k)));
+      const paidKeys = isDebts ? (selPeriod ? [`${d.fingerprint}#${selPeriod.k}`] : paidKeysFor(d)) : [];
+      const paid = isDebts && paidKeys.every(k => ccPaidFps.includes(k));
       const tickCell = isDebts ? `<td style="text-align:center"><button class="cc-tick${paid ? ' on' : ''}" onclick="event.stopPropagation();window.ccTick(${d.id})" title="${paid ? 'Mark unpaid' : 'Mark paid'}">${paid ? '✓' : '○'}</button></td>` : '';
-      const noteDate = isDebts ? (ccNoteFps && ccNoteFps[d.fingerprint]) : null;
-      const noteCell = isDebts ? `<td style="text-align:center"><button class="cc-note${noteDate ? ' on' : ''}" onclick="event.stopPropagation();window.ccNote(${d.id})" title="${noteDate ? 'Noted ' + noteDate : 'Confirm sent/received'}">${noteDate ? '✓' : '○'}</button></td>` : '';
+      // "Paid on" = the day the Paid tick was pressed (meta ccPaidAt, same keys as ccPaidFps). For a whole
+      // installment record it shows the most recent period tick; "—" until paid, or for ticks made before this
+      // column existed (no date was recorded then).
+      const paidOn = paid ? paidKeys.map(k => ccPaidAt && ccPaidAt[k]).filter(Boolean).sort().pop() : null;
+      const paidOnCell = isDebts ? `<td class="cc-paid-on">${paidOn ? fmtDayStr(paidOn) : '—'}</td>` : '';
       const ci = catsList.indexOf(d.category);
       const cc = NICE_COLORS[ci%NICE_COLORS.length];
       const camIc = d.image ? `<svg class="img-ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" title="View photo" onclick="window.viewImage(event, ${d.id})"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>` : '';
       // Faint (k/N) beside the name only while its statement-month group is selected — the name is never renamed.
       const instBadge = selPeriod ? ` <span class="inst-badge">(${selPeriod.k}/${selPeriod.N})</span>` : '';
-      html += `<tr class="${paid ? 'tx-paid' : ''}" onclick="window.editRow(${d.id})" title="Click to edit"><td style="color:var(--text-3)">${start+i+1}</td><td>${esc(d.name)}${instBadge}${camIc}</td><td class="amt"${amtStyle}>${sign}${fmt(d.amount)}</td><td><span class="cat-badge" style="background:${cc}22;color:${cc}">${esc(d.category)}</span></td><td style="color:var(--text-2)">${fmtDate(d)}</td><td style="color:var(--text-3);font-size:11px">${d.method ? esc(d.method) : '—'}</td>${noteCell}${tickCell}</tr>`;
+      html += `<tr class="${paid ? 'tx-paid' : ''}" onclick="window.editRow(${d.id})" title="Click to edit"><td style="color:var(--text-3)">${start+i+1}</td><td>${esc(d.name)}${instBadge}${camIc}</td><td class="amt"${amtStyle}>${sign}${fmt(d.amount)}</td><td><span class="cat-badge" style="background:${cc}22;color:${cc}">${esc(d.category)}</span></td><td style="color:var(--text-2)">${fmtDate(d)}</td><td style="color:var(--text-3);font-size:11px">${d.method ? esc(d.method) : '—'}</td>${paidOnCell}${tickCell}</tr>`;
     });
     html += `</tbody></table>`;
     html += `<div class="pagination"><span>${td.length?start+1:0}–${end} of ${td.length}</span><div><button onclick="window.pp()" ${page===0?'disabled':''}>←</button><span style="margin:0 6px">${page+1}/${tp}</span><button onclick="window.np()" ${page>=tp-1?'disabled':''}>→</button></div></div>`;
@@ -835,8 +938,9 @@ function render() {
 // The global month filter picks the "focus month" the stat cards / doughnut zoom into; the
 // cashflow chart and the lists span every month. renderOverview just orchestrates the panels.
 //
-// Configurable dashboard: persisted in meta 'overviewWidgets' as [{id, visible}] in display order.
-// Each panel in #overview-view is tagged `data-ov-id`; renderOverview applies visibility/order.
+// Configurable dashboard: persisted in meta 'overviewWidgets' as [{id, visible, col}] in display order.
+// applyOvLayout moves each panel into its saved column, in the saved order; the rest of renderOverview
+// only fills them in. Settings → Overview layout edits the same list through a miniature of this grid.
 function renderOverview() {
   document.getElementById('ledger-view').style.display = 'none';
   document.getElementById('overview-view').style.display = 'block';
@@ -855,6 +959,7 @@ function renderOverview() {
     : 'No data yet — add or import transactions in the ledgers.';
 
   const layout = getOvWidgets();
+  applyOvLayout(layout);   // column + order first, so panels are in place before their charts are drawn
   const setVis = (id, on) => {
     const el = document.getElementById(id);
     if (el) el.style.display = on ? '' : 'none';
@@ -867,7 +972,7 @@ function renderOverview() {
   setVis('saving-plans', wvis('plans'));
   setVis('ov-fifty', wvis('fifty'));
   setVis('ov-cards', wvis('stats'));
-  setVis('ov-flow', wvis('cashflow'));
+  setVis('ov-flow-panel', wvis('cashflow'));   // the whole panel (header + tabs + canvas), not just the canvas
   setVis('recent-tx', wvis('recent'));
   setVis('ov-stat-panel', wvis('stat'));
   setVis('ov-budgets', wvis('budgets'));
@@ -883,6 +988,23 @@ function renderOverview() {
   if (wvis('activity')) renderOvActivity();
 }
 
+// Move the Overview panels into the columns/order the user arranged in Settings. Re-parenting is skipped
+// when a column already holds exactly the right children, so a normal render never touches the DOM here
+// (moving a <canvas> mid-chart is what we're avoiding).
+function applyOvLayout(layout) {
+  OV_COL_KEYS.forEach(colKey => {
+    const col = document.querySelector(`.ov-col-${colKey}`);
+    if (!col) return;
+    const wanted = layout
+      .filter(w => w.col === colKey)
+      .map(w => document.getElementById(OV_WIDGET_EL[w.id]))
+      .filter(Boolean);
+    const current = [...col.children];
+    if (current.length === wanted.length && wanted.every((el, i) => current[i] === el)) return;
+    wanted.forEach(el => col.appendChild(el)); // appendChild moves an existing node — no clone, no listener loss
+  });
+}
+
 // Settings page (T1: static data ops). Later phases render the categories manager, budgets,
 // 50/30/20 config and misclassification suggestions into this page.
 function renderSettings() {
@@ -890,7 +1012,7 @@ function renderSettings() {
   renderCardsManager();
   renderBudgets('set-budgets', true);   // inline editable + drag-sortable (replaces the old modal)
   renderMisclass('set-misclass');
-  renderSyncSettings();
+  renderServerStatus();
   renderOvLayoutSettings();
   // 50/30/20 status (config via the modal; Need/Want/Save bars show on the Overview tab).
   const exCats = [...new Set(allData.filter(isExpense).map(d => d.category))];
@@ -1179,7 +1301,7 @@ async function savePlan() {
   document.getElementById('plan-overlay').style.display = 'none';
   toast(idx >= 0 ? 'Plan saved' : 'Plan added', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 async function deletePlan() {
   if (editingPlanId == null) return;
@@ -1188,7 +1310,7 @@ async function deletePlan() {
   document.getElementById('plan-overlay').style.display = 'none';
   toast('Plan deleted', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // --- Settings → My cards: store the user's own card details (number/expiry/CVV) for reference.
@@ -1196,7 +1318,7 @@ async function deletePlan() {
 function getCards() { return Array.isArray(cards) ? cards : []; }
 // The Overview card features the explicitly-pinned card, else falls back to the first saved card.
 function getPinnedCard() { const l = getCards(); return l.find(c => c.id === pinnedCardId) || l[0] || null; }
-async function persistPinned() { const db = await openDB(); await putMeta(db, 'pinnedCard', pinnedCardId); db.close(); scheduleSyncPush(); }
+async function persistPinned() { const db = await openDB(); await putMeta(db, 'pinnedCard', pinnedCardId); db.close(); markSaved(); }
 function setPinnedCard(id) { pinnedCardId = (pinnedCardId === id) ? null : id; persistPinned(); renderCardsManager(); renderBalanceCard(); }
 // Copy helper with a file:// fallback (clipboard API is blocked on some non-secure origins).
 async function copyText(t) {
@@ -1496,7 +1618,7 @@ async function saveCard() {
   toast(idx >= 0 ? 'Card saved' : 'Card added', 'success');
   renderCardsManager();
   renderBalanceCard(); // keep the Overview card in sync with edits to the pinned/first card
-  scheduleSyncPush();
+  markSaved();
 }
 async function deleteCard(id) {
   const cid = (id != null && typeof id !== 'object') ? id : editingCardId; // called from list (id) or modal Delete (no arg)
@@ -1510,7 +1632,7 @@ async function deleteCard(id) {
   toast('Card deleted', 'success');
   renderCardsManager();
   renderBalanceCard();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // --- Debts & Credit Cards modal and database logic ---
@@ -1590,7 +1712,7 @@ async function saveDebt() {
   document.getElementById('debt-overlay').style.display = 'none';
   toast(idx >= 0 ? 'Debt saved' : 'Debt added', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 async function deleteDebt() {
   if (editingDebtId == null) return;
@@ -1600,7 +1722,7 @@ async function deleteDebt() {
   document.getElementById('debt-overlay').style.display = 'none';
   toast('Debt reminder deleted', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // --- Debts & Credit Cards rendering and payment logic ---
@@ -1689,11 +1811,13 @@ function getCreditCardBalance(d, fm) {
 // --- Credit Cards ledger: the Debts tab is a transaction table of expenses paid by "Credit Card"
 // (filtered via matchesView). Each row has a "Paid" tick — a reminder that you've settled that charge on
 // your card bill. These transactions ALREADY count as normal expenses, so ticking changes no total; the
-// paid state is just a set of fingerprints in meta 'ccPaidFps'.
+// paid state is just a set of fingerprints in meta 'ccPaidFps', plus the day it was ticked in 'ccPaidAt'
+// (shown in the "Paid on" column — un-ticking clears it, so the date always belongs to the current tick).
 async function toggleCcPaidTxn(id) {
   const r = allData.find(x => x.id === id);
   if (!r) return;
   if (!Array.isArray(ccPaidFps)) ccPaidFps = [];
+  if (!ccPaidAt || typeof ccPaidAt !== 'object') ccPaidAt = {};
   // Default: flip the record's whole paid state (all installment periods together).
   let keys = paidKeysFor(r);
   // But when a single statement-month group is selected in "Remaining owed", target JUST that period — so a
@@ -1705,30 +1829,20 @@ async function toggleCcPaidTxn(id) {
   }
   const set = new Set(ccPaidFps);
   const allPaid = keys.every(k => set.has(k));
-  keys.forEach(k => allPaid ? set.delete(k) : set.add(k));
+  const today = localDateStr(new Date());
+  keys.forEach(k => {
+    if (allPaid) { set.delete(k); delete ccPaidAt[k]; }
+    else { set.add(k); ccPaidAt[k] = today; }
+  });
   ccPaidFps = [...set];
   const db = await openDB();
-  await putMeta(db, 'ccPaidFps', ccPaidFps);
+  // One request for both: a tick and the date it was ticked must never land separately.
+  await putMetaBulk({ ccPaidFps, ccPaidAt });
   db.close();
   render();
-  scheduleSyncPush();
-}
-async function toggleCcNote(id) {
-  const r = allData.find(x => x.id === id);
-  if (!r) return;
-  if (!ccNoteFps || typeof ccNoteFps !== 'object') ccNoteFps = {};
-  const fp = r.fingerprint;
-  const noted = !!ccNoteFps[fp];
-  if (!noted) ccNoteFps[fp] = localDateStr(new Date());
-  else delete ccNoteFps[fp];
-  const db = await openDB();
-  await putMeta(db, 'ccNoteFps', ccNoteFps);
-  db.close();
-  render();
-  scheduleSyncPush();
+  markSaved();
 }
 window.ccTick = (id) => toggleCcPaidTxn(id);
-window.ccNote = (id) => toggleCcNote(id);
 function getPaidAmount(d, fm) {
   if (!d.paidAmounts) return 0;
   return d.isRecurring ? (d.paidAmounts[fm] || 0) : (d.paidAmounts['one-time'] || 0);
@@ -1824,7 +1938,7 @@ async function toggleDebtPaid(id) {
   
   await persistDebts();
   await reloadPreservingFilters();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Set the global month filter from the overview (click a bar); click the active month again to clear.
@@ -1910,7 +2024,7 @@ async function persistGoal() {
   document.getElementById('goal-overlay').style.display = 'none';
   toast(goal > 0 ? 'Savings goal set' : 'Goal cleared', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 function saveGoal() {
   const v = parseAmount(document.getElementById('goal-input').value);
@@ -2022,18 +2136,24 @@ async function saveClassify() {
   document.getElementById('class-overlay').style.display = 'none';
   toast('50/30/20 settings saved', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Flag expense transactions whose name keywords imply a different bucket and/or a better-fitting
 // existing category than where they're filed. Advisory only — clicking a row opens the editor with the
 // suggested category preselected so the user confirms (no silent data changes).
 let misclassSuggest = {}; // { [id]: { cat } } — rebuilt each render; read by window.fixCat
+// "Đúng chỗ rồi" key: this NAME filed under this CATEGORY is confirmed correct. Keyed by name+category (not by
+// id/fingerprint) so confirming "cọc Wifi → Shopping" once also silences the next identical transaction; moving
+// the transaction to another category makes it a different key, so a genuinely wrong filing gets flagged again.
+function catOkKey(d) { return `${norm(d.name)}|${d.category}`; }
 function renderMisclass(targetId) {
   const wrap = document.getElementById(targetId);
   if (!wrap) return;
   misclassSuggest = {};
+  const okSet = new Set(Array.isArray(catOk) ? catOk : []);
   const flagged = [];
+  let confirmed = 0;
   for (const d of allData) {
     if (!isExpense(d) || d.id == null) continue;
     const g = matchGroup(d.name);
@@ -2043,10 +2163,20 @@ function renderMisclass(targetId) {
     const betterCat = suggestCatForGroup(g, d.category);
     if (!betterCat) continue; // Only flag if there is a suggested better category
 
+    if (okSet.has(catOkKey(d))) { confirmed++; continue; } // user already vouched for this name+category
     const sugBucket = catClass[betterCat] || null;
     flagged.push({ d, curBucket, sugCat: betterCat, sugBucket: sugBucket || g.bucket });
   }
-  if (!flagged.length) { wrap.innerHTML = ''; wrap.style.display = 'none'; return; }
+  const okNote = confirmed
+    ? `<div class="fifty-note mis-okline">✓ ${confirmed} transaction(s) confirmed as correctly placed · <button class="mis-reset" onclick="window.misReset()">show them again</button></div>`
+    : '';
+  if (!flagged.length) {
+    // Nothing left to flag — keep the card only to offer the undo, otherwise hide it entirely.
+    if (!confirmed) { wrap.innerHTML = ''; wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    wrap.innerHTML = `<div class="sec-head"><h3>✅ Categories look right</h3></div>${okNote}`;
+    return;
+  }
   wrap.style.display = '';
   flagged.sort((a, b) => b.d.amount - a.d.amount);
   const shown = flagged.slice(0, 8);
@@ -2058,15 +2188,43 @@ function renderMisclass(targetId) {
     const sugPart = f.sugCat
       ? `${esc(f.sugCat)} <span style="color:var(--text-2)">(${bLabel(catClass[f.sugCat] || f.sugBucket)})</span>`
       : `bucket <b style="color:${BUCKET_COLOR[f.sugBucket]}">${BUCKET_LABEL[f.sugBucket]}</b>`;
-    return `<div class="mis-row" onclick="window.fixCat(${f.d.id})" title="Click to edit">
+    // Two ways out of a suggestion: move it (opens the editor with the suggested category preselected) or
+    // confirm it's already right (stopPropagation so it doesn't also open the editor).
+    return `<div class="mis-row" onclick="window.fixCat(${f.d.id})" title="Click to move it to the suggested category">
       <div class="mis-name">${esc(f.d.name) || '—'} <span class="mis-amt">${fmt(f.d.amount)}</span></div>
       <div class="mis-move">now: ${curPart} <span class="mis-arrow">→</span> suggested: ${sugPart}</div>
+      <div class="mis-acts">
+        <button class="mis-ok" onclick="event.stopPropagation();window.catOkay(${f.d.id})" title="Keep the current category and stop flagging it">✓ Đúng chỗ rồi</button>
+        <button class="mis-move-btn" onclick="event.stopPropagation();window.fixCat(${f.d.id})">Move →</button>
+      </div>
     </div>`;
   }).join('');
   const more = flagged.length > shown.length ? `<div class="fifty-note">… and ${flagged.length - shown.length} more transactions</div>` : '';
-  wrap.innerHTML = `<div class="sec-head"><h3>⚠️ Possibly miscategorized (${flagged.length})</h3></div>${rows}${more}`;
+  wrap.innerHTML = `<div class="sec-head"><h3>⚠️ Possibly miscategorized (${flagged.length})</h3></div>${rows}${more}${okNote}`;
 }
 window.fixCat = (id) => { const s = misclassSuggest[id]; openEditor(id, s ? s.cat : undefined); };
+// Confirm the current category is right → remember name+category and drop the suggestion (no data is changed).
+window.catOkay = async (id) => {
+  const d = allData.find(x => x.id === id);
+  if (!d) return;
+  const key = catOkKey(d);
+  if (!Array.isArray(catOk)) catOk = [];
+  if (!catOk.includes(key)) catOk = [...catOk, key];
+  const db = await openDB();
+  await putMeta(db, 'catOk', catOk);
+  db.close();
+  toast(`Đã xác nhận “${d.name}” thuộc ${d.category}`, 'success');
+  render();
+  markSaved();
+};
+window.misReset = async () => {
+  catOk = [];
+  const db = await openDB();
+  await putMeta(db, 'catOk', catOk);
+  db.close();
+  render();
+  markSaved();
+};
 
 // --- Budgets & insights (the "focus month" follows the month filter, else the latest month) ---
 function focusMonth() {
@@ -2216,7 +2374,7 @@ async function persistBudgets() {
   await putMeta(db, 'budgets', budgets);
   db.close();
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Set (or clear, when val<=0) one category's monthly limit, then persist + re-render.
@@ -2279,7 +2437,7 @@ async function saveBudgetsModal() {
   document.getElementById('budget-overlay').style.display = 'none';
   toast('Budgets saved', 'success');
   render();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Fill each budget input with that category's average spend per month (rounded to 1.000đ).
@@ -2363,7 +2521,7 @@ async function catSetBucket(name, bucket) {
   else delete catClass[name];
   const db = await openDB(); await putMeta(db, 'catClass', catClass); db.close();
   toast('50/30/20 bucket saved', 'success');
-  scheduleSyncPush();
+  markSaved();
 }
 
 async function catAdd(rawName, type) {
@@ -2374,7 +2532,7 @@ async function catAdd(rawName, type) {
   const db = await openDB(); await putMeta(db, 'cats', catReg); db.close();
   toast(`Added "${name}"`, 'success');
   renderCategoriesManager();
-  scheduleSyncPush();
+  markSaved();
 }
 
 async function catDelete(name) {
@@ -2389,7 +2547,7 @@ async function catDelete(name) {
   db.close();
   toast(`Deleted "${name}"`, 'success');
   renderCategoriesManager();
-  scheduleSyncPush();
+  markSaved();
 }
 
 async function catRename(oldName, rawNew) {
@@ -2424,11 +2582,11 @@ async function applyCategoryRenames(renames) {
     out.push({ ...r, category: newCat, fingerprint: newFp });
   }
   try {
-    const tx = db.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
-    store.clear();
-    out.forEach(r => store.put(r)); // put keeps each record's id
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    // replaceAll = delete-then-insert inside ONE server transaction, keeping each record's id. Renaming a
+    // category rewrites fingerprints, and a row-by-row update would transiently collide with the unique
+    // index; wiping the table first inside the same transaction avoids that without ever exposing an
+    // empty table to another reader.
+    await apiFetch('/api/records/bulk', { method: 'POST', body: { replaceAll: out } });
   } catch (e) {
     db.close();
     toast('Rename failed — try again', 'warn');
@@ -2440,32 +2598,69 @@ async function applyCategoryRenames(renames) {
     if (catClass[oldN] != null) { if (catClass[newN] == null) catClass[newN] = catClass[oldN]; delete catClass[oldN]; }
     if (catReg[oldN] != null) { if (catReg[newN] == null && !out.some(r => r.category === newN)) catReg[newN] = catReg[oldN]; delete catReg[oldN]; }
   }
+  // "Đúng chỗ rồi" keys are `${norm(name)}|${category}` — follow the rename so confirmed rows don't get re-flagged.
+  if (Array.isArray(catOk) && catOk.length) {
+    catOk = [...new Set(catOk.map(k => {
+      const i = k.lastIndexOf('|');
+      if (i < 0) return k;
+      const cat = k.slice(i + 1);
+      return map.has(cat) ? `${k.slice(0, i)}|${map.get(cat)}` : k;
+    }))];
+    await putMeta(db, 'catOk', catOk);
+  }
   await putMeta(db, 'budgets', budgets);
   await putMeta(db, 'catClass', catClass);
   await putMeta(db, 'cats', catReg);
   db.close();
   toast(`Updated ${renames.length} categories${merged ? ` · merged ${merged} duplicates` : ''}`, 'success');
   await reloadPreservingFilters();
-  scheduleSyncPush();
+  markSaved();
 }
 
-// --- Backup / Restore (full JSON snapshot of every record) ---
+// --- Backup / Restore ---
+// The backup is now built BY THE SERVER: GET /api/backup.zip streams a self-contained archive holding
+// spendy-backup.json (every record plus EVERY meta key — budgets, plans, paid ticks and the saved card
+// details) alongside images/<hash> for each attachment. The browser only triggers the download, so the
+// archive no longer depends on what this tab happens to have in memory.
 function getDebts() { return Array.isArray(debts) ? debts : []; }
-function backupJSON() {
-  if (!allData.length) { toast('No data to back up', 'warn'); return; }
-  const records = allData.map(({ id, ...r }) => r); // drop autoincrement id; fingerprint dedups on restore
-  const payload = { app: 'spendy', version: 1, records, budgets, goal, catClass, incomeBase, cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, ccNoteFps, cards: getCards(), pinnedCard: pinnedCardId };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
+function backupData() {
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `spendy-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.href = '/api/backup.zip';
+  a.download = `spendy-backup-${localDateStr(new Date())}.zip`;
   document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-  toast(`Backed up ${records.length} records`, 'success');
+  toast('Đang tải backup .zip — gồm giao dịch, cài đặt, thẻ và ảnh', 'success');
+}
+// JSON-only escape hatch: same payload minus the images, for a quick text-diffable snapshot.
+function backupJSONOnly() {
+  const a = document.createElement('a');
+  a.href = '/api/backup.json';
+  a.download = `spendy-backup-${localDateStr(new Date())}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('Đang tải backup .json (không kèm ảnh)', 'success');
 }
 
-let pendingRestore = null; // parsed-but-not-yet-written restore, awaiting the user's confirmation
+let pendingRestore = null;      // parsed-but-not-yet-written JSON restore, awaiting the user's confirmation
+let pendingRestoreToken = null; // token of a .zip staged on the server, awaiting the same confirmation
+
+// A .zip can only be unpacked server-side, so the file is uploaded to /api/restore/stage first. Staging
+// writes nothing to the database — the same confirmation dialog then posts the token back to commit.
+async function stageRestoreFile(file) {
+  toast('Đang tải file lên server…', 'info');
+  let info;
+  try {
+    info = await apiFetch('/api/restore/stage', { method: 'POST', body: file });
+  } catch (e) {
+    toast('Không đọc được file backup (' + (e.name === 'ApiError' ? (e.code || 'lỗi') : e.name) + ')', 'warn');
+    return;
+  }
+  pendingRestore = null;
+  pendingRestoreToken = info.token;
+  const lines = [`File có <b>${info.total}</b> giao dịch: <b style="color:#22c55e">${info.fresh} mới</b> sẽ được thêm, ${info.duplicates} đã có sẵn.`];
+  if (info.images) lines.push(`Kèm <b>${info.images}</b> ảnh đính kèm.`);
+  if (info.metaKeys && info.metaKeys.length) lines.push(`Ghi đè cài đặt: <b>${info.metaKeys.map(esc).join(', ')}</b>.`);
+  document.getElementById('restore-summary').innerHTML = lines.join('<br>');
+  document.getElementById('restore-overlay').style.display = 'flex';
+}
 
 // Phase 1: parse + validate the file and stage the merge, then ask the user to confirm.
 async function restoreJSON(text) {
@@ -2502,10 +2697,12 @@ async function restoreJSON(text) {
   const plans = (!Array.isArray(payload) && Array.isArray(payload.plans)) ? payload.plans : null;
   const debts = (!Array.isArray(payload) && Array.isArray(payload.debts)) ? payload.debts : null;
   const ccPaid = (!Array.isArray(payload) && Array.isArray(payload.ccPaidFps)) ? payload.ccPaidFps : null;
+  const ccAt = (!Array.isArray(payload) && payload.ccPaidAt && typeof payload.ccPaidAt === 'object') ? payload.ccPaidAt : null;
   const ccNote = (!Array.isArray(payload) && payload.ccNoteFps && typeof payload.ccNoteFps === 'object') ? payload.ccNoteFps : null;
+  const catOkList = (!Array.isArray(payload) && Array.isArray(payload.catOk)) ? payload.catOk : null;
   const cardsList = (!Array.isArray(payload) && Array.isArray(payload.cards)) ? payload.cards : null;
   const pinnedCard = (!Array.isArray(payload) && typeof payload.pinnedCard === 'string') ? payload.pinnedCard : null;
-  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, ccNote, cards: cardsList, pinnedCard };
+  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, ccAt, ccNote, catOk: catOkList, cards: cardsList, pinnedCard };
 
   // Summarise exactly what will happen and wait for confirmation (numbers only — safe to innerHTML).
   const lines = [`File has <b>${incoming.length}</b> records: <b style="color:#22c55e">${fresh.length} new</b> will be added, ${incoming.length - fresh.length} already present.`];
@@ -2517,7 +2714,9 @@ async function restoreJSON(text) {
   if (plans) lines.push(`Overwrite <b>saving plans</b> (${plans.length} plans).`);
   if (debts) lines.push(`Overwrite <b>debts & credit cards</b> (${debts.length} entries).`);
   if (cardsList) lines.push(`Overwrite <b>saved cards</b> (${cardsList.length}).`);
-  if (ccNote) lines.push(`Overwrite <b>credit-card confirm notes</b> (${Object.keys(ccNote).length}).`);
+  if (ccAt) lines.push(`Overwrite <b>credit-card paid dates</b> (${Object.keys(ccAt).length}).`);
+  if (catOkList) lines.push(`Overwrite <b>confirmed categories</b> (${catOkList.length}).`);
+  if (ccNote) lines.push(`Overwrite <b>credit-card confirm notes</b> (${Object.keys(ccNote).length}, legacy).`);
   document.getElementById('restore-summary').innerHTML = lines.join('<br>');
   document.getElementById('restore-overlay').style.display = 'flex';
 }
@@ -2525,24 +2724,38 @@ async function restoreJSON(text) {
 // Phase 2: commit the merge the user confirmed in the dialog.
 async function commitRestore() {
   document.getElementById('restore-overlay').style.display = 'none';
+  // A staged .zip is applied entirely on the server (records merge by fingerprint, meta overwrites,
+  // images unpack); the client just says go and reloads.
+  if (pendingRestoreToken) {
+    const token = pendingRestoreToken;
+    pendingRestoreToken = null;
+    setConn('busy');
+    try {
+      const r = await apiFetch('/api/restore/commit', { method: 'POST', body: { token } });
+      toast(`Đã khôi phục ${r.added} mới · ${r.duplicates} đã có sẵn`, 'success');
+    } catch (e) {
+      toast('Khôi phục thất bại (' + (e.name || 'error') + ')', 'warn');
+      return;
+    }
+    await loadFromDB();
+    return;
+  }
   if (!pendingRestore) return;
-  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, ccNote: cn, cards: cds, pinnedCard: pc } = pendingRestore;
+  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, ccAt: cca, ccNote: cn, catOk: cok, cards: cds, pinnedCard: pc } = pendingRestore;
   pendingRestore = null;
   const db = await openDB();
   let added = 0;
+  setConn('busy');
   if (fresh.length) {
-    const tx = db.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
-    for (const r of fresh) {
-      const req = store.add(r);
-      req.onsuccess = () => added++;
-      // Skip a DUPLICATE fingerprint (ConstraintError) without aborting the batch; let any other error
-      // (e.g. QuotaExceededError) abort the transaction so it surfaces instead of silently dropping the row.
-      req.onerror = e => { if (req.error && req.error.name === 'ConstraintError') e.preventDefault(); };
+    // One batched insert; duplicate fingerprints are skipped server-side, everything else rolls back.
+    // Any base64 image carried by an older backup is turned into a stored file + hash by the server.
+    try {
+      const res = await bulkWrite(fresh);
+      added = (res && res.added) || 0;
+    } catch (e) {
+      toast('Restore thất bại — không ghi được lên server (' + (e.name || 'error') + ')', 'warn');
+      return;
     }
-    // Resolve on oncomplete; reject only on a genuine ABORT. (A preventDefault'd per-request error still BUBBLES
-    // to tx.onerror with tx.error === null — rejecting there would throw null on every duplicate-skip.)
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error || new Error('transaction aborted')); });
   }
   if (b) await putMeta(db, 'budgets', b);
   if (g != null) await putMeta(db, 'goal', g);
@@ -2552,7 +2765,9 @@ async function commitRestore() {
   if (pl) await putMeta(db, 'plans', pl);
   if (dt) await putMeta(db, 'debts', dt);
   if (ccp) await putMeta(db, 'ccPaidFps', ccp);
+  if (cca) await putMeta(db, 'ccPaidAt', cca);
   if (cn) await putMeta(db, 'ccNoteFps', cn);
+  if (cok) await putMeta(db, 'catOk', cok);
   if (cds) await putMeta(db, 'cards', cds);
   if (pc) await putMeta(db, 'pinnedCard', pc);
   // A restored OLD backup may contain legacy split rows ("Foo (k/N)"). Clear the one-time-merge flag so the
@@ -2561,7 +2776,7 @@ async function commitRestore() {
   db.close();
   toast(`Restored ${added} new · ${total - added} already present`, 'success');
   await loadFromDB();
-  scheduleSyncPush();
+  markSaved();
 }
 
 function buildFilters() {
@@ -2610,9 +2825,12 @@ function fmt(n) {
 // Date display dd/mm/yyyy derived from the stored ISO dateStr. Display only — dateStr / monthKey /
 // fingerprint stay ISO (changing them would break dedup), so we format here at render time.
 function fmtDate(d) {
-  const s = d && d.dateStr;
+  return fmtDayStr(d && d.dateStr);
+}
+// Same dd/mm/yyyy display for a bare 'YYYY-MM-DD' string (ccPaidAt stamps, etc.).
+function fmtDayStr(s) {
   if (!s) return '—';
-  const [y, m, day] = s.split('-');
+  const [y, m, day] = String(s).split('-');
   return (y && m && day) ? `${day}/${m}/${y}` : '—';
 }
 // Compact đ for chart AXIS TICKS ONLY (full numbers stay in cards/tables/tooltips): 2,500,000 -> "2.5M".
@@ -2678,20 +2896,18 @@ async function handleCSV(text, defaultType) {
     return;
   }
 
-  // Batch add
-  const tx = db.transaction(STORE, 'readwrite');
-  const store = tx.objectStore(STORE);
+  // One batched server insert. A row duplicated WITHIN the file is skipped there (same as the old swallowed
+  // ConstraintError); any other failure rolls the batch back, so a half-imported file can't happen.
   let added = 0;
-  for (const r of newRecords) {
-    const req = store.add(r);
-    req.onsuccess = () => added++;
-    // A duplicate fingerprint (same row twice within one file) rejects this request with ConstraintError;
-    // preventDefault keeps it from aborting the whole batch. Any OTHER error (e.g. quota) is left to abort & surface.
-    req.onerror = e => { if (req.error && req.error.name === 'ConstraintError') e.preventDefault(); };
+  setConn('busy');
+  try {
+    const res = await bulkWrite(newRecords);
+    added = (res && res.added) || 0;
+  } catch (e) {
+    db.close();
+    toast('Import thất bại — không ghi được lên server (' + (e.name || 'error') + ')', 'warn');
+    return;
   }
-  // Resolve on oncomplete; reject only on a genuine ABORT — a preventDefault'd duplicate still bubbles to
-  // tx.onerror with tx.error === null, and rejecting there would throw null whenever a within-file dup is skipped.
-  await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error || new Error('transaction aborted')); });
   db.close();
 
   const tLabel = defaultType === 'income' ? 'income' : defaultType === 'invest' ? 'investment' : 'expense';
@@ -2702,7 +2918,7 @@ async function handleCSV(text, defaultType) {
   if (extra.length) msg += ' · ' + extra.join(' · ');
   toast(msg, (droppedEmpty || undated) ? 'warn' : 'success');
   await loadFromDB();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // --- Edit / Add / Export ---
@@ -2723,19 +2939,17 @@ async function reloadPreservingFilters() {
 async function wipeAllData() {
   const db = await openDB();
   try {
-    const tx = db.transaction([STORE, 'meta'], 'readwrite');
-    tx.objectStore(STORE).clear();
-    tx.objectStore('meta').clear();
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    await apiFetch('/api/records?meta=1', { method: 'DELETE' }); // clears records AND every meta key
   } catch (e) {
     db.close();
     toast('Delete failed — try again', 'warn');
     return;
   }
+  metaCache = {};
   db.close();
   await loadFromDB(); // reloads empty → resets budgets/goal/catClass/incomeBase + shows empty state
   toast('All data deleted', 'success');
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Populate a <select> with the distinct existing values plus a "➕ New…" escape hatch that reveals
@@ -2910,6 +3124,7 @@ function openEditor(id, presetCat) {
 }
 
 function openAdd() {
+  if (!requireLoaded()) return;
   editingId = null;
   modalTitle.textContent = 'Add transaction';
   efName.value = ''; efAmount.value = '';
@@ -2932,6 +3147,9 @@ function openAdd() {
 
 function closeEditor() { editingId = null; pendingImage = null; overlay.style.display = 'none'; }
 
+// `src` is either a stored image hash (editing an existing record) or a fresh data: URL (the user just picked
+// a file). pendingImage keeps whichever it is — saveEdit sends it as-is and the server turns a data: URL into
+// a hash, so re-saving an untouched record never re-uploads its image.
 function setImgPreview(src) {
   pendingImage = src || null;
   const preview = document.getElementById('ef-img-preview');
@@ -2939,7 +3157,7 @@ function setImgPreview(src) {
   const thumb = document.getElementById('ef-img-thumb');
   const input = document.getElementById('ef-img-input');
   if (src) {
-    thumb.src = src;
+    thumb.src = imgSrc(src);
     preview.style.display = 'block';
     pick.style.display = 'none';
   } else {
@@ -2987,16 +3205,39 @@ async function saveEdit() {
   // Carry "đã trả" (ccPaidFps) state across the edit: its keys derive from the fingerprint (which changes when
   // name/amount/category/date change) and from the period count. Remap old keys → new keys positionally so a
   // typo-fix or amount tweak doesn't silently reset paid marks (and drop keys for periods that no longer exist).
-  if (isEdit && Array.isArray(ccPaidFps) && ccPaidFps.length) {
+  if (isEdit && ((Array.isArray(ccPaidFps) && ccPaidFps.length) || Object.keys(ccPaidAt || {}).length)) {
     const oldRec = all.find(r => r.id === editingId);
     if (oldRec) {
       const oldKeys = paidKeysFor(oldRec), newKeys = paidKeysFor(rec);
       if (oldKeys.join('|') !== newKeys.join('|')) {
         const map = {}; oldKeys.forEach((k, i) => { if (i < newKeys.length) map[k] = newKeys[i]; });
         const oldSet = new Set(oldKeys);
-        const next = ccPaidFps.filter(k => !oldSet.has(k) || map[k]).map(k => map[k] || k);
-        ccPaidFps = [...new Set(next)];
-        await putMeta(db, 'ccPaidFps', ccPaidFps);
+        const patch = {};
+        if (Array.isArray(ccPaidFps) && ccPaidFps.length) {
+          const next = ccPaidFps.filter(k => !oldSet.has(k) || map[k]).map(k => map[k] || k);
+          patch.ccPaidFps = [...new Set(next)];
+        }
+        // The "Paid on" stamps ride the same keys — remap/drop them in lockstep so no date outlives its tick.
+        if (Object.keys(ccPaidAt || {}).length) {
+          const nextAt = {};
+          Object.keys(ccPaidAt).forEach(k => {
+            if (!oldSet.has(k)) nextAt[k] = ccPaidAt[k];
+            else if (map[k]) nextAt[map[k]] = ccPaidAt[k];
+          });
+          patch.ccPaidAt = nextAt;
+        }
+        // Both keys in ONE request: the record write already landed, so a half-applied remap here would
+        // leave paid ticks pointing at a fingerprint that no longer exists. If it still fails, say so —
+        // the ticks are recoverable by hand, but only if the user knows they were lost.
+        if (Object.keys(patch).length) {
+          try {
+            await putMetaBulk(patch);
+            if (patch.ccPaidFps) ccPaidFps = patch.ccPaidFps;
+            if (patch.ccPaidAt) ccPaidAt = patch.ccPaidAt;
+          } catch (err) {
+            toast('Đã lưu giao dịch, nhưng KHÔNG cập nhật được trạng thái "đã trả" — kiểm tra lại tab Credit Cards', 'warn');
+          }
+        }
       }
     }
   }
@@ -3008,7 +3249,7 @@ async function saveEdit() {
   if (view !== 'overview' && view !== 'debts' && savedView !== view) setView(savedView);
   toast(isEdit ? 'Saved' : 'Added', 'success');
   await reloadPreservingFilters();
-  scheduleSyncPush();
+  markSaved();
 }
 
 async function deleteEdit() {
@@ -3020,7 +3261,7 @@ async function deleteEdit() {
   closeEditor();
   toast('Deleted', 'success');
   await reloadPreservingFilters();
-  scheduleSyncPush();
+  markSaved();
 }
 
 // Export records back to a CSV in the same shape they were imported (round-trips through handleCSV).
@@ -3085,7 +3326,7 @@ window.viewImage = function(e, id) {
   e.stopPropagation();
   const d = allData.find(x => x.id === id);
   if (d && d.image) {
-    document.getElementById('img-lb-img').src = d.image;
+    document.getElementById('img-lb-img').src = imgSrc(d.image); // hash → /api/images/<hash> (a data: URL passes through)
     document.getElementById('img-lightbox').classList.add('show');
   }
 };
@@ -3150,6 +3391,7 @@ document.addEventListener('keydown', e => {
 });
 
 document.getElementById('import-btn').addEventListener('click', () => {
+  if (!requireLoaded()) return;
   document.getElementById('file-input').click();
 });
 document.getElementById('file-input').addEventListener('change', e => {
@@ -3162,23 +3404,33 @@ document.getElementById('file-input').addEventListener('change', e => {
   e.target.value = ''; // reset so same file can be re-picked
 });
 
-document.getElementById('backup-btn').addEventListener('click', backupJSON);
+document.getElementById('backup-btn').addEventListener('click', backupData);
+{ const b = document.getElementById('backup-json-btn'); if (b) b.addEventListener('click', backupJSONOnly); }
 document.getElementById('restore-btn').addEventListener('click', () => {
+  if (!requireLoaded()) return;
   document.getElementById('json-input').click();
 });
 document.getElementById('json-input').addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
+  e.target.value = '';
+  // A .zip holds the images too and can only be unpacked server-side; a bare .json is still parsed here so
+  // that every old backup (images inline as data-URLs) keeps restoring exactly as it always did.
+  if (/\.zip$/i.test(file.name)) { stageRestoreFile(file); return; }
   const reader = new FileReader();
   reader.onload = ev => restoreJSON(ev.target.result);
   reader.readAsText(file);
-  e.target.value = '';
 });
 
 // Restore confirmation modal
 document.getElementById('restore-confirm').addEventListener('click', commitRestore);
-document.getElementById('restore-cancel').addEventListener('click', () => { pendingRestore = null; document.getElementById('restore-overlay').style.display = 'none'; });
-dismissOnBackdrop(document.getElementById('restore-overlay'), () => { pendingRestore = null; document.getElementById('restore-overlay').style.display = 'none'; });
+// Cancelling must drop the staged-upload token too, or the next confirm would commit the abandoned file.
+const cancelRestore = () => {
+  pendingRestore = null; pendingRestoreToken = null;
+  document.getElementById('restore-overlay').style.display = 'none';
+};
+document.getElementById('restore-cancel').addEventListener('click', cancelRestore);
+dismissOnBackdrop(document.getElementById('restore-overlay'), cancelRestore);
 
 // Export scope picker
 document.getElementById('exp-all').addEventListener('click', () => exportCSV('all'));
@@ -3310,346 +3562,169 @@ try {
   }
 } catch (e) {}
 
-// ─── File System Access API Sync ───
-// Auto-sync data to/from a local JSON file via the File System Access API.
-// The JSON file (e.g. spendy-sync.json) lives in a Google Drive-synced folder.
-// Google Drive handles cross-machine sync; this code handles read/write to disk.
-//
-// SYNC TURNED OFF: set to false to disable file-sync entirely (no auto-connect on load,
-// no auto-push on mutation, Sync card hidden in Settings). Flip back to true to re-enable —
-// all the sync code below is kept intact/dormant. Disabled per user request (was flaky).
-const SYNC_ENABLED = false;
-
-let syncFileHandle = null;  // FileSystemFileHandle, persisted in IndexedDB 'meta'
-let syncLinked = false;      // true when handle exists and readwrite permission granted
-let syncBusy = false;        // prevent concurrent file writes
-let lastSyncedAt = 0;        // timestamp of last sync (avoid re-importing own writes)
-let syncPushTimer = null;    // debounce timer for auto-push
-
-// Build the full backup payload (same shape as backupJSON).
-function buildSyncPayload() {
-  const records = allData.map(({ id, ...r }) => r);
-  return {
-    app: 'spendy', version: 1, syncedAt: Date.now(),
-    records, budgets, goal, catClass, incomeBase,
-    cats: catReg, plans: getPlans(), debts: getDebts(), ccPaidFps, ccNoteFps, cards: getCards(), pinnedCard: pinnedCardId
-  };
-}
-
-// Debounced push — call after every mutation; collapses rapid-fire writes into one.
-function scheduleSyncPush() {
-  if (!SYNC_ENABLED || !syncFileHandle || !syncLinked) return;
-  clearTimeout(syncPushTimer);
-  syncPushTimer = setTimeout(fileSyncPush, 500);
-}
-
-// Write the current state to the linked sync file.
-async function fileSyncPush() {
-  if (!syncFileHandle || !syncLinked || syncBusy) return;
-  syncBusy = true;
-  try {
-    if ((await syncFileHandle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
-      syncLinked = false; updateSyncUI(); syncBusy = false; return;
-    }
-    const payload = buildSyncPayload();
-    const writable = await syncFileHandle.createWritable();
-    await writable.write(JSON.stringify(payload, null, 2));
-    await writable.close();
-    lastSyncedAt = payload.syncedAt; // only mark "we wrote this" AFTER the write succeeds, so a failed push doesn't make the next pull skip a real update
-    const db = await openDB();
-    await putMeta(db, 'lastSyncedAt', lastSyncedAt);
-    db.close();
-    updateSyncUI('synced');
-  } catch (e) {
-    console.warn('fileSyncPush failed:', e);
-    updateSyncUI('error');
-  } finally {
-    syncBusy = false;
-  }
-}
-
-// Read the sync file and silently merge new records + meta.
-async function fileSyncPull() {
-  if (!syncFileHandle || !syncLinked) return false;
-  try {
-    const file = await syncFileHandle.getFile();
-    const text = await file.text();
-    if (!text || text.length < 10) return false;
-
-    let payload;
-    try { payload = JSON.parse(text); } catch { return false; }
-    if (!payload || payload.app !== 'spendy' || !Array.isArray(payload.records)) return false;
-    if (payload.syncedAt && payload.syncedAt === lastSyncedAt) return false; // we wrote this ourselves
-
-    const db = await openDB();
-    const existing = await getFingerprints(db);
-
-    const incoming = payload.records.map(r => makeRecord({
-      name: (r.name || '').trim(),
-      amount: Number(r.amount) || 0,
-      category: r.category || 'Uncategorized',
-      method: r.method || '',
-      date: parseDate(r.date != null ? r.date : r.dateStr),
-      type: r.type,
-      image: r.image || null,
-      installments: r.installments || null
-    }));
-    const fresh = incoming.filter(r => !existing.has(r.fingerprint));
-
-    let changed = false;
-    if (fresh.length) {
-      const tx = db.transaction(STORE, 'readwrite');
-      const store = tx.objectStore(STORE);
-      for (const r of fresh) {
-        const req = store.add(r);
-        // Skip a duplicate fingerprint (ConstraintError); let any other error abort so it doesn't false-toast success.
-        req.onerror = e => { if (req.error && req.error.name === 'ConstraintError') e.preventDefault(); };
-      }
-      // Resolve on complete; reject only on a real abort (a skipped duplicate bubbles to tx.onerror with null error).
-      await new Promise((res, rej) => { tx.oncomplete = res; tx.onabort = () => rej(tx.error || new Error('transaction aborted')); });
-      changed = true;
-    }
-
-    // Overwrite meta if the file is from a different sync session (written by another machine).
-    if (payload.syncedAt !== lastSyncedAt) { // import peer meta even when syncedAt is falsy/missing (the && guard silently skipped it before)
-      if (payload.budgets && typeof payload.budgets === 'object') await putMeta(db, 'budgets', payload.budgets);
-      if (typeof payload.goal === 'number') await putMeta(db, 'goal', payload.goal);
-      if (payload.catClass && typeof payload.catClass === 'object') await putMeta(db, 'catClass', payload.catClass);
-      if (typeof payload.incomeBase === 'number') await putMeta(db, 'incomeBase', payload.incomeBase);
-      if (payload.cats && typeof payload.cats === 'object') await putMeta(db, 'cats', payload.cats);
-      if (Array.isArray(payload.plans)) await putMeta(db, 'plans', payload.plans);
-      if (Array.isArray(payload.debts)) await putMeta(db, 'debts', payload.debts);
-      if (Array.isArray(payload.ccPaidFps)) await putMeta(db, 'ccPaidFps', payload.ccPaidFps);
-      if (payload.ccNoteFps && typeof payload.ccNoteFps === 'object') await putMeta(db, 'ccNoteFps', payload.ccNoteFps);
-      if (Array.isArray(payload.cards)) await putMeta(db, 'cards', payload.cards);
-      if (typeof payload.pinnedCard === 'string' || payload.pinnedCard === null) await putMeta(db, 'pinnedCard', payload.pinnedCard);
-      lastSyncedAt = payload.syncedAt;
-      await putMeta(db, 'lastSyncedAt', lastSyncedAt);
-      changed = true;
-    }
-
-    db.close();
-    if (changed) {
-      await loadFromDB();
-      if (fresh.length) toast(`Synced ${fresh.length} new record(s) from file`, 'success');
-      else toast('Settings synced from file', 'success');
-    }
-    return changed;
-  } catch (e) {
-    console.warn('fileSyncPull failed:', e);
-    return false;
-  }
-}
-
-// Let the user pick (or create) the sync file.
-async function linkSyncFile() {
-  if (!('showSaveFilePicker' in window)) {
-    toast('File sync not supported — use Edge or Chrome', 'warn');
-    return;
-  }
-  try {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: 'spendy-sync.json',
-      types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
-    });
-    syncFileHandle = handle;
-    syncLinked = true;
-    const db = await openDB();
-    await putMeta(db, 'syncHandle', handle);
-    db.close();
-    updateSyncUI('synced');
-    // If the picked file already has data, pull first
-    await fileSyncPull();
-    // Then push current (merged) state
-    await fileSyncPush();
-    toast('Sync file linked ✓', 'success');
-    renderSyncSettings();
-  } catch (e) {
-    if (e.name !== 'AbortError') { // user cancelled the picker
-      console.warn('linkSyncFile failed:', e);
-      toast('Could not link sync file', 'warn');
-    }
-  }
-}
-
-async function unlinkSyncFile() {
-  syncFileHandle = null;
-  syncLinked = false;
-  const db = await openDB();
-  await putMeta(db, 'syncHandle', null);
-  db.close();
-  updateSyncUI();
-  toast('Sync file unlinked', 'success');
-  renderSyncSettings();
-}
-
-// On app load: retrieve handle from IndexedDB, request permission, pull.
-async function initFileSync() {
-  if (!('showSaveFilePicker' in window)) return;
-  try {
-    const db = await openDB();
-    const handle = await getMeta(db, 'syncHandle');
-    lastSyncedAt = (await getMeta(db, 'lastSyncedAt')) || 0;
-    db.close();
-    if (!handle || !(handle instanceof FileSystemFileHandle)) return;
-    syncFileHandle = handle;
-
-    // Only QUERY at load — requestPermission() requires a user gesture and throws/auto-denies on page load
-    // in current Chrome. If not already granted, defer re-granting to the "Reconnect sync" click below.
-    const perm = await handle.queryPermission({ mode: 'readwrite' });
-    if (perm === 'granted') {
-      syncLinked = true;
-      updateSyncUI('synced');
-      await fileSyncPull();
-    } else {
-      updateSyncUI('denied');
-    }
-  } catch (e) {
-    console.warn('initFileSync failed:', e);
-  }
-  renderSyncSettings();
-}
-
-// Re-grant permission to an already-linked handle via a user gesture (queryPermission at load can't do this).
-async function reconnectSync() {
-  if (!syncFileHandle) { linkSyncFile(); return; }
-  try {
-    const perm = await syncFileHandle.requestPermission({ mode: 'readwrite' });
-    if (perm === 'granted') {
-      syncLinked = true;
-      updateSyncUI('synced');
-      await fileSyncPull();
-      toast('Sync reconnected ✓', 'success');
-    } else {
-      updateSyncUI('denied');
-      toast('Permission denied', 'warn');
-    }
-  } catch (e) {
-    console.warn('reconnectSync failed:', e);
-    toast('Could not reconnect sync', 'warn');
-  }
-  renderSyncSettings();
-}
-
-function updateSyncUI(state) {
-  const indicator = document.getElementById('sync-indicator');
-  const label = document.getElementById('sync-indicator-label');
-  if (!indicator) return;
-  if (!syncFileHandle) { indicator.style.display = 'none'; return; }
-  indicator.style.display = '';
-  const ico = indicator.querySelector('.ico');
-  if (state === 'synced')       { ico.textContent = '🔗'; label.textContent = 'Synced'; }
-  else if (state === 'error')   { ico.textContent = '⚠️'; label.textContent = 'Sync error'; }
-  else if (state === 'denied')  { ico.textContent = '🔒'; label.textContent = 'Sync blocked'; }
-  else                          { ico.textContent = '🔗'; label.textContent = 'Linked'; }
-}
-
-function renderSyncSettings() {
-  const card = document.getElementById('set-sync');
-  if (!SYNC_ENABLED) { if (card) card.style.display = 'none'; return; } // sync turned off — hide the whole card
-  const status = document.getElementById('sync-status');
-  const acts = document.getElementById('sync-acts');
-  if (!status || !acts) return;
-  if (!('showSaveFilePicker' in window)) {
-    status.textContent = 'File sync is not available in this browser. Use Edge or Chrome.';
-    acts.innerHTML = '';
-    return;
-  }
-  acts.innerHTML = '';
-  if (syncLinked && syncFileHandle) {
-    status.innerHTML = `✅ Linked to <b>${esc(syncFileHandle.name)}</b> — changes auto-sync.`;
-    const pullBtn = document.createElement('button');
-    pullBtn.className = 'side-act'; pullBtn.innerHTML = '<span class="ico">⬇️</span>Pull now';
-    pullBtn.addEventListener('click', async () => { const r = await fileSyncPull(); if (!r) toast('Already up to date', 'info'); });
-    const pushBtn = document.createElement('button');
-    pushBtn.className = 'side-act'; pushBtn.innerHTML = '<span class="ico">⬆️</span>Push now';
-    pushBtn.addEventListener('click', async () => { await fileSyncPush(); toast('Pushed to sync file', 'success'); });
-    const unlinkBtn = document.createElement('button');
-    unlinkBtn.className = 'side-act danger'; unlinkBtn.innerHTML = '<span class="ico">🔓</span>Unlink sync file';
-    unlinkBtn.addEventListener('click', unlinkSyncFile);
-    acts.append(pullBtn, pushBtn, unlinkBtn);
-  } else if (syncFileHandle && !syncLinked) {
-    status.innerHTML = `⚠️ Linked to <b>${esc(syncFileHandle.name)}</b> but not connected this session. Click reconnect to resume auto-sync.`;
-    const btn = document.createElement('button');
-    btn.className = 'side-act accent'; btn.innerHTML = '<span class="ico">🔗</span>Reconnect sync';
-    btn.addEventListener('click', reconnectSync);
-    acts.appendChild(btn);
-  } else {
-    status.textContent = 'Link a JSON file in your Google Drive folder to auto-sync data between devices.';
-    const btn = document.createElement('button');
-    btn.className = 'side-act accent'; btn.innerHTML = '<span class="ico">🔗</span>Link sync file';
-    btn.addEventListener('click', linkSyncFile);
-    acts.appendChild(btn);
-  }
-}
-
-// Overview dashboard layout manager (visible / order). Persisted as meta 'overviewWidgets' [{id,visible}].
+// Overview dashboard layout manager — a MINIATURE of the real Overview grid rather than a flat list, so the
+// arrangement is visible at a glance: three columns in the same proportions, each holding its panels in order.
+// Drag a chip within a column to reorder, or across to another column; the eye hides a panel without losing its
+// place. Persisted as meta 'overviewWidgets' [{id, visible, col}] and applied by applyOvLayout.
 function renderOvLayoutSettings() {
   const wrap = document.getElementById('ov-layout-manager');
   if (!wrap) return;
   const layout = getOvWidgets();
-  const LABELS = {
-    card:'Pinned card', plans:'Saving Plans', fifty:'50/30/20', stats:'Stat cards',
-    cashflow:'Cashflow', recent:'Recent', stat:'Statistic', budgets:'Budgets', activity:'Activity'
-  };
-  wrap.innerHTML = layout.map((w,i) => {
-    const label = LABELS[w.id] || w.id;
-    return `<div class="cat-row ov-layout-row" draggable="true" data-id="${esc(w.id)}">
-      <button class="bud-drag" title="Drag to reorder">⠿</button>
-      <label class="ov-layout-toggle" title="Show / hide"><input type="checkbox" data-id="${esc(w.id)}"${w.visible?' checked':''}><span>${esc(label)}</span></label>
-      <span class="ov-layout-idx">${i + 1}</span>
+  const cols = OV_COL_KEYS.map(colKey => {
+    const items = layout.filter(w => w.col === colKey);
+    const chips = items.map(w => `
+      <div class="ovl-chip${w.visible ? '' : ' off'}" draggable="true" data-id="${esc(w.id)}" title="Drag to move · click the eye to show / hide">
+        <span class="ovl-grip">⠿</span>
+        <span class="ovl-ico">${OV_WIDGET_ICON[w.id] || '▫️'}</span>
+        <span class="ovl-name">${esc(OV_WIDGET_LABEL[w.id] || w.id)}</span>
+        <button class="ovl-eye" data-id="${esc(w.id)}" title="${w.visible ? 'Hide on Overview' : 'Show on Overview'}">${w.visible ? '👁' : '🚫'}</button>
+      </div>`).join('');
+    const empty = items.length ? '' : '<div class="ovl-empty">Drop a panel here</div>';
+    return `<div class="ovl-col" data-col="${colKey}">
+      <div class="ovl-col-h">${OV_COL_LABEL[colKey]}</div>
+      <div class="ovl-drop" data-col="${colKey}">${chips}${empty}</div>
     </div>`;
   }).join('');
-  wrap.querySelectorAll('.ov-layout-toggle input[type="checkbox"]').forEach(inp => {
-    inp.addEventListener('change', async () => { await setOvWidgetVisible(inp.dataset.id, inp.checked); renderOverview(); scheduleSyncPush(); });
+  const hidden = layout.filter(w => !w.visible).length;
+  wrap.innerHTML = `<div class="ovl-grid">${cols}</div>
+    <div class="ovl-foot">
+      <span class="muted" style="padding:0">${layout.length - hidden} shown · ${hidden} hidden</span>
+      <button class="ovl-reset" id="ov-layout-reset">Reset to default layout</button>
+    </div>`;
+
+  wrap.querySelectorAll('.ovl-eye').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const list = getOvWidgets();
+      const w = list.find(x => x.id === btn.dataset.id);
+      if (!w) return;
+      w.visible = !w.visible;
+      ovWidgets = list;
+      await persistOvWidgets();
+      renderOvLayoutSettings();
+      if (allData.length) renderOverview(); // the Overview DOM only exists once there's data
+      markSaved();
+    });
+  });
+  const reset = document.getElementById('ov-layout-reset');
+  if (reset) reset.addEventListener('click', async () => {
+    ovWidgets = DEFAULT_OV_WIDGETS.map(w => ({ ...w }));
+    await persistOvWidgets();
+    renderOvLayoutSettings();
+    if (allData.length) renderOverview();
+    markSaved();
+    toast('Overview layout reset', 'success');
   });
   setupOvLayoutDnD(wrap);
 }
 
-async function setupOvLayoutDnD(root) {
+// HTML5 drag/drop across the three mini columns. The drop position is read from the pointer (insert before the
+// first chip whose middle is below it, else append), which is what makes cross-column moves feel direct.
+function setupOvLayoutDnD(root) {
   let dragId = null;
-  root.querySelectorAll('.ov-layout-row').forEach(row => {
-    row.addEventListener('dragstart', e => {
-      dragId = row.dataset.id;
-      row.classList.add('bud-dragging');
+  const clearMarks = () => root.querySelectorAll('.ovl-chip, .ovl-drop').forEach(el => el.classList.remove('ovl-dragging', 'ovl-over', 'ovl-mark'));
+  const chipToInsertBefore = (drop, clientY) => {
+    const chips = [...drop.querySelectorAll('.ovl-chip')].filter(c => c.dataset.id !== dragId);
+    for (const c of chips) { const r = c.getBoundingClientRect(); if (clientY < r.top + r.height / 2) return c; }
+    return null;
+  };
+  root.querySelectorAll('.ovl-chip').forEach(chip => {
+    chip.addEventListener('dragstart', e => {
+      dragId = chip.dataset.id;
+      chip.classList.add('ovl-dragging');
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', dragId);
     });
-    row.addEventListener('dragend', () => { dragId = null; root.querySelectorAll('.ov-layout-row').forEach(r => r.classList.remove('bud-dragging', 'bud-drop')); });
+    chip.addEventListener('dragend', () => { dragId = null; clearMarks(); });
   });
-  root.querySelectorAll('.ov-layout-row').forEach(row => {
-    row.addEventListener('dragover', e => { if (!dragId) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
-    row.addEventListener('dragenter', () => { if (dragId && row.dataset.id !== dragId) row.classList.add('bud-drop'); });
-    row.addEventListener('dragleave', () => row.classList.remove('bud-drop'));
-    row.addEventListener('drop', async e => {
-      e.preventDefault(); row.classList.remove('bud-drop');
+  root.querySelectorAll('.ovl-drop').forEach(drop => {
+    drop.addEventListener('dragover', e => {
       if (!dragId) return;
-      const target = row.dataset.id;
-      const list = getOvWidgets();
-      const fi = list.findIndex(w => w.id === dragId);
-      const ti = list.findIndex(w => w.id === target);
-      if (fi < 0 || ti < 0 || fi === ti) return;
-      [list[fi], list[ti]] = [list[ti], list[fi]];
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      root.querySelectorAll('.ovl-drop').forEach(d => d.classList.toggle('ovl-over', d === drop));
+      const before = chipToInsertBefore(drop, e.clientY);
+      drop.querySelectorAll('.ovl-chip').forEach(c => c.classList.toggle('ovl-mark', c === before));
+    });
+    drop.addEventListener('dragleave', e => { if (!drop.contains(e.relatedTarget)) drop.classList.remove('ovl-over'); });
+    drop.addEventListener('drop', async e => {
+      e.preventDefault();
+      if (!dragId) return;
+      const before = chipToInsertBefore(drop, e.clientY);
+      const list = moveOvWidget(getOvWidgets(), dragId, drop.dataset.col, before ? before.dataset.id : null);
+      dragId = null;
+      clearMarks();
       ovWidgets = list;
       await persistOvWidgets();
       renderOvLayoutSettings();
-      renderOverview();
-      scheduleSyncPush();
+      if (allData.length) renderOverview();
+      markSaved();
     });
   });
 }
 
-async function setOvWidgetVisible(id, visible) {
-  const list = getOvWidgets();
-  const i = list.findIndex(w => w.id === id);
-  if (i < 0) return;
-  list[i].visible = !!visible;
-  // Drop hidden widgets from the saved order entirely? keep order stable: keep them so re-enable preserves order.
-  await persistOvWidgets();
+// Pull `dragId` out of the flat list and re-insert it in `colKey`, just before `beforeId` (or last in that
+// column when null). The flat list stays the single source of order; each column is just a filter of it.
+function moveOvWidget(list, dragId, colKey, beforeId) {
+  const from = list.findIndex(w => w.id === dragId);
+  if (from < 0 || !OV_COL_KEYS.includes(colKey)) return list;
+  const [item] = list.splice(from, 1);
+  item.col = colKey;
+  let at = beforeId ? list.findIndex(w => w.id === beforeId) : -1;
+  if (at < 0) { // append: after the column's current last member, else at the very end
+    let last = -1;
+    list.forEach((w, i) => { if (w.col === colKey) last = i; });
+    at = last + 1;
+  }
+  list.splice(at, 0, item);
+  return list;
+}
+
+// --- Server connection status ---
+// Writes reach SQLite over HTTP now, so the two things worth showing are "the last change is safely on the
+// server" and "it isn't". Both live in one pill in the sidebar, visible from every tab.
+
+// Called at each mutation site (it replaced the old debounced sync push). By the time it runs the write has
+// already been acknowledged by the server, so it only has to confirm it.
+function markSaved() { setConn('ok'); }
+
+// A failed startup read is fatal in a server-authoritative app: there is nothing local to fall back on, and
+// an empty dashboard would read as "all my data is gone". Say what actually happened instead.
+function showConnError(err) {
+  const box = document.getElementById('empty-state');
+  document.getElementById('dashboard').style.display = 'none';
+  const settingsView = document.getElementById('settings-view');
+  if (settingsView) settingsView.style.display = 'none';
+  if (!box) return;
+  const loading = document.getElementById('loading-state');
+  if (loading) loading.style.display = 'none';
+  box.style.display = 'block';
+  box.innerHTML = `<div class="icon">🔌</div>
+    <p>Không kết nối được server.</p>
+    <p class="hint">Dữ liệu nằm trên server Spendy — trình duyệt không giữ bản sao nào, nên đây <b>không</b> phải là mất dữ liệu.
+    Kiểm tra container còn chạy không (<code>docker compose ps</code>) rồi tải lại trang.</p>
+    <p class="hint">Chi tiết: ${esc((err && err.message) || 'unknown')}</p>
+    <p style="margin-top:18px"><button class="side-act accent" style="display:inline-flex;width:auto" onclick="location.reload()"><span class="ico">🔄</span>Thử lại</button></p>`;
+}
+
+// Settings → Data → Server: where the data actually lives, and whether this tab can see it.
+async function renderServerStatus() {
+  const el = document.getElementById('server-status');
+  if (!el) return;
+  el.innerHTML = '<span class="muted">Đang kiểm tra server…</span>';
+  try {
+    const h = await apiFetch('/api/health');
+    const b = Number(h.dbBytes) || 0;
+    const mb = b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b ? Math.round(b / 1024) + ' KB' : '—';
+    el.innerHTML = `<b style="color:var(--pos)">● Đã kết nối</b> — <b>${h.records}</b> giao dịch, <b>${h.images}</b> ảnh, CSDL ${esc(mb)}.<br>
+      <span class="muted">Dữ liệu nằm trong SQLite trên server, không nằm trong trình duyệt và không nằm trong repo Git.</span>`;
+  } catch (e) {
+    el.innerHTML = `<b style="color:var(--neg)">⚠ Mất kết nối</b> — <span class="muted">không gọi được <code>/api/health</code>. Thay đổi sẽ KHÔNG được lưu.</span>`;
+  }
 }
 
 // Init
 (async () => {
-  await loadFromDB();
-  if (SYNC_ENABLED) await initFileSync();
+  setConn('boot');
+  await loadFromDB();   // one GET /api/state fills allData + every meta global, then renders
 })();

@@ -1,0 +1,69 @@
+# Build context filter for the Spendy image.
+#
+# Strategy: DENY EVERYTHING, then re-allow exactly the three paths the image needs.
+# Rationale: this repo sits in a Google Drive folder next to the owner's real financial
+# data (spendy-db.js is ~61 MB of transactions and base64 receipt photos, and the meta
+# blob holds card numbers + CVV). An allow-list is the only version of this file that
+# stays correct when a new personal file appears in the folder tomorrow.
+#
+# Docker sends the Dockerfile itself to the builder regardless of the rules below.
+
+# 1) Deny everything.
+*
+
+# 2) Re-allow only what the runtime image actually contains.
+!Spendy.html
+!spendy.js
+!server
+
+# 3) Belt and braces. Later patterns win, so nothing re-allowed above can smuggle these
+#    in — and neither can a future edit to the allow-list.
+
+# The owner's data, in every shape it takes
+**/data
+**/spendy-db.js
+**/spendy-sync.json
+**/backup
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+**/*.sqlite3
+**/*.csv
+**/*.zip
+**/*.docx
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.webp
+**/images
+**/tmp
+
+# Repo/agent scratch that has no business in an image layer
+**/.git
+**/.gitignore
+**/.github
+**/.codegraph
+**/.claude
+**/docs
+**/screenshots
+**/tasks
+**/idea
+**/*.md
+**/NOTES.md
+**/TODO.md
+**/CLAUDE.md
+
+# Local config / editor / OS junk
+**/.env
+**/.env.*
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.vscode
+**/.idea
+**/.DS_Store
+**/Thumbs.db
+**/Desktop.ini
+**/*.lnk

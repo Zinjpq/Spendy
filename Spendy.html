@@ -11,8 +11,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<!-- Chart.js + PapaParse are vendored into the Docker image at build time so the app works on a LAN with no
+     internet. A plain git clone has no vendor/ dir, so each falls back to its CDN — document.write keeps the
+     fallback SYNCHRONOUS, which matters because spendy.js expects both globals to exist when it runs. -->
+<script src="vendor/chart.umd.min.js"></script>
+<script>window.Chart||document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4"><\/script>');</script>
+<script src="vendor/papaparse.min.js"></script>
+<script>window.Papa||document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"><\/script>');</script>
 <style>
 /* ===== Design tokens — warm-monochrome editorial palette, forest-green accent (light default + dark) ===== */
 /* Type system: serif for editorial headings, geometric sans for UI, mono for figures/meta. */
@@ -112,6 +117,14 @@ body{font-family:var(--font-sans);background:var(--bg);color:var(--text);min-hei
 .side-act .ico{font-size:13px;width:16px;text-align:center}
 .side-act.danger{color:var(--neg);border-color:var(--border-2);background:var(--surface)}
 .side-act.danger:hover{background:var(--neg-bg);border-color:var(--neg)}
+/* Server connection pill — the standing answer to "did my last change actually get saved?" */
+.conn-pill{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:8px;font-size:11px;
+  border:1px solid var(--border-2);background:var(--surface);color:var(--text-3);cursor:default;user-select:none}
+.conn-pill .conn-dot{font-size:10px;line-height:1}
+.conn-pill.ok{color:var(--pos);border-color:color-mix(in srgb,var(--pos) 35%,var(--border-2))}
+.conn-pill.busy{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--border-2))}
+.conn-pill.error{color:var(--neg);border-color:var(--neg);background:var(--neg-bg);font-weight:600}
+.sidebar.collapsed .conn-pill .conn-label{display:none}
 /* Sidebar action buttons sit on the warm canvas — white cards with a solid-green primary */
 .sidebar .side-act{background:var(--surface);border-color:var(--border-2);color:var(--text-2)}
 .sidebar .side-act:hover{background:var(--sidebar-hover-bg);color:var(--sidebar-hover-ink);border-color:var(--border-2)}
@@ -272,9 +285,9 @@ tbody tr{cursor:pointer}
 .cc-tick{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--border-2);background:transparent;color:var(--text-3);font-size:13px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
 .cc-tick:hover{border-color:var(--c-income);color:var(--c-income)}
 .cc-tick.on{background:var(--c-income);border-color:var(--c-income);color:#fff}
-.cc-note{width:26px;height:26px;border-radius:50%;border:1.5px solid var(--border-2);background:transparent;color:var(--text-3);font-size:13px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
-.cc-note:hover{border-color:var(--c-invest);color:var(--c-invest)}
-.cc-note.on{background:var(--c-invest);border-color:var(--c-invest);color:#fff}
+/* "Paid on" — the day the Paid tick was pressed (read-only; written by toggleCcPaidTxn / markDebtGroupPaid). */
+.cc-paid-on{text-align:center;font-family:var(--font-mono);font-size:11px;color:var(--text-3);white-space:nowrap}
+tr.tx-paid .cc-paid-on{color:var(--c-income);opacity:.85} /* stays readable while the rest of the row dims */
 tbody tr.tx-paid td{opacity:.5}
 tbody tr.tx-paid .amt{text-decoration:line-through}
 /* Faint "(k/N)" shown beside an installment row only while its statement-month group is selected in "Remaining owed" */
@@ -352,10 +365,23 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 .sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:10px}
 .sec-head h3{font-size:15px;color:var(--text);font-weight:500}
 .sec-head .btn-import{padding:5px 11px}
-#settings-view{max-width:760px}
+#settings-view{max-width:1180px}
 .settings-head{margin-bottom:20px}
+/* Two equal columns so the page stops being one long scroll; collapses to one on narrow screens. */
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.set-col{min-width:0}
 .settings-card{margin-bottom:14px}
+.set-col > .settings-card:last-child{margin-bottom:0}
 .settings-acts{display:flex;flex-direction:column;gap:8px}
+.settings-acts.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+/* Sub-sections inside a merged card (folder DB / sync / danger zone all live in the Data card). */
+.set-sub{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+.set-sub-h{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);font-weight:700;margin-bottom:8px}
+.set-hbtns{display:flex;gap:6px;flex-wrap:wrap}
+@media(max-width:980px){
+  .settings-grid{grid-template-columns:1fr}
+  .settings-acts.grid2{grid-template-columns:1fr}
+}
 .cats-modal{max-width:680px}
 #cats-overlay #cat-manager{max-height:60vh;overflow-y:auto;margin-top:2px;padding-right:4px}
 .cat-mgr-group{margin-bottom:16px}
@@ -399,6 +425,29 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 .bud-add .bud-add-cat:focus,.bud-add .bud-add-amt:focus{border-color:var(--accent)}
 .bud-add .bud-add-btn{flex:0 0 auto;width:auto}
 .bud-add select:disabled,.bud-add input:disabled,.bud-add button:disabled{opacity:.5;cursor:default}
+/* Overview layout manager — a miniature of the real Overview grid (same 3 columns, same proportions)
+   so the arrangement is readable at a glance. Chips are draggable within and across columns. */
+.ovl-grid{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:10px;align-items:start}
+.ovl-col{min-width:0}
+.ovl-col-h{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);font-weight:700;margin:0 0 6px 2px}
+.ovl-drop{display:flex;flex-direction:column;gap:6px;min-height:74px;padding:7px;border:1px dashed var(--border-2);border-radius:10px;background:var(--surface-2);transition:.12s}
+.ovl-drop.ovl-over{border-color:var(--accent);background:var(--surface-3)}
+.ovl-chip{display:flex;align-items:center;gap:4px;padding:7px 6px;border:1px solid var(--border-2);border-radius:8px;background:var(--surface);cursor:grab;font-size:11px;color:var(--text);transition:.12s}
+.ovl-chip:hover{border-color:var(--accent)}
+.ovl-chip:active{cursor:grabbing}
+.ovl-chip.off{opacity:.45;border-style:dashed}
+.ovl-chip.ovl-dragging{opacity:.35}
+.ovl-chip.ovl-mark{box-shadow:inset 0 2px 0 var(--accent)}
+.ovl-grip{color:var(--text-3);font-size:10px;line-height:1;user-select:none;flex:0 0 auto}
+.ovl-ico{font-size:11px;flex:0 0 auto}
+.ovl-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ovl-eye{flex:0 0 auto;background:none;border:none;padding:0 1px;font-size:11px;line-height:1;cursor:pointer;opacity:.75}
+.ovl-eye:hover{opacity:1}
+.ovl-empty{font-size:10.5px;color:var(--text-3);text-align:center;padding:14px 4px}
+.ovl-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;flex-wrap:wrap}
+.ovl-reset{background:none;border:1px solid var(--border-2);color:var(--text-3);border-radius:7px;padding:4px 9px;font-size:11px;font-family:inherit;cursor:pointer;transition:.12s}
+.ovl-reset:hover{border-color:var(--neg);color:var(--neg)}
+@media(max-width:640px){.ovl-grid{grid-template-columns:1fr}}
 #budget-fields,#class-fields{display:grid;grid-template-columns:1fr auto;gap:7px 12px;align-items:center;max-height:50vh;overflow-y:auto}
 #budget-fields label,#class-fields label{margin:0;text-transform:none;font-size:12px;color:var(--text);letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400}
 #budget-fields input{width:140px}
@@ -419,6 +468,14 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 .mis-amt{color:var(--text-2);font-variant-numeric:tabular-nums;font-family:var(--font-mono);flex-shrink:0}
 .mis-move{font-size:11px;color:var(--text-2)}
 .mis-arrow{color:var(--warn);margin:0 4px}
+/* Per-suggestion actions: confirm the current category is right, or move it to the suggested one. */
+.mis-acts{display:flex;gap:6px;margin-top:8px}
+.mis-acts button{background:var(--surface);border:1px solid var(--border-2);color:var(--text-2);border-radius:7px;padding:4px 9px;font-size:11px;font-family:inherit;cursor:pointer;transition:.12s}
+.mis-ok:hover{border-color:var(--c-income);color:var(--c-income)}
+.mis-move-btn:hover{border-color:var(--warn);color:var(--warn)}
+.mis-okline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px}
+.mis-reset{background:none;border:none;padding:0;font:inherit;font-size:11px;color:var(--text-3);text-decoration:underline;cursor:pointer}
+.mis-reset:hover{color:var(--text)}
 
 .goal-head{display:flex;align-items:baseline;gap:8px;margin-bottom:10px;flex-wrap:wrap}
 .goal-saved{font-size:25px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
@@ -507,6 +564,8 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 
 /* 3 stat cards at the top of the middle column — compact so long VND numbers fit on one line */
 .ov-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+/* The stat cards / cashflow are sized for the wide middle column — stack them if dragged into a side column. */
+.ov-col-left .ov-stats,.ov-col-right .ov-stats{grid-template-columns:1fr;gap:12px}
 .ov-stats .card{padding:16px 16px;border-radius:12px;gap:6px}
 .ov-stats .card-ico{width:32px;height:32px;font-size:15px;border-radius:8px}
 .ov-stats .card .value{font-size:18px}
@@ -758,15 +817,24 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 
   <div class="nav-section">Actions</div>
   <button class="side-act accent" id="add-btn"><span class="ico">➕</span><span id="add-label">Add transaction</span></button>
-  <button class="side-act" id="sync-indicator" style="display:none"><span class="ico">🔗</span><span id="sync-indicator-label">Synced</span></button>
   <button class="side-act" id="theme-btn"><span class="ico" id="theme-ico">🌙</span><span id="theme-label">Dark mode</span></button>
+  <!-- Every write goes straight to the server, so there is no "Save" button any more — just the standing
+       answer to "is my last change safe?". Red here means a write did NOT land. -->
+  <div class="conn-pill boot" id="conn-pill" title="Trạng thái kết nối server"><span class="conn-dot">⋯</span><span class="conn-label">Đang kết nối…</span></div>
 
   <input type="file" id="file-input" accept=".csv">
-  <input type="file" id="json-input" accept=".json,application/json">
+  <input type="file" id="json-input" accept=".zip,.json,application/json,application/zip">
 </aside>
 
 <main>
-  <div id="empty-state" class="empty-state">
+  <!-- Startup is a real network round-trip now, so "still loading" needs to look different from "no data yet" —
+       otherwise the app greets you with "No data yet. Import a CSV" every time before the first fetch lands. -->
+  <div id="loading-state" class="empty-state">
+    <div class="icon">⏳</div>
+    <p>Đang tải dữ liệu từ server…</p>
+  </div>
+
+  <div id="empty-state" class="empty-state" style="display:none">
     <div class="icon">💸</div>
     <p>No data yet.</p>
     <p class="hint">Open <strong>⚙️ Settings → Import CSV</strong> to load a Notion export — or switch to the <strong>Income</strong> / <strong>Investments</strong> tab first, then import (the type follows the open tab).</p>
@@ -832,7 +900,7 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
         <!-- Middle column: 3 stat cards · cashflow · recent transactions -->
         <div class="ov-col ov-col-mid">
           <div class="ov-stats" id="ov-cards"></div>
-          <div class="ov-panel cashflow-panel">
+          <div class="ov-panel cashflow-panel" id="ov-flow-panel">
             <div class="ov-phead">
               <div class="stat-tabs" id="ov-flow-tabs">
                 <button class="stat-tab" data-mode="flow">Cashflow</button>
@@ -854,58 +922,77 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
     </div>
   </div>
 
-  <!-- Settings page (standalone, lives outside #dashboard so it works even with no data) -->
+  <!-- Settings page (standalone, lives outside #dashboard so it works even with no data).
+       Two equal columns; everything that moves data in or out of the app lives in ONE card. -->
   <div id="settings-view" style="display:none">
     <div class="settings-head">
       <div class="view-title"><span class="em">⚙️</span>Settings</div>
       <div class="muted">Import / export data, back up, and manage categories.</div>
     </div>
 
-    <div class="panel settings-card">
-      <div class="nav-section" style="padding:0 0 10px">Data</div>
-      <div class="settings-acts">
-        <button class="side-act" id="import-btn"><span class="ico">📂</span><span id="import-label">Import CSV</span></button>
-        <button class="side-act" id="export-btn"><span class="ico">⬇️</span>Export CSV</button>
-        <button class="side-act" id="backup-btn"><span class="ico">💾</span>Backup (JSON)</button>
-        <button class="side-act" id="restore-btn"><span class="ico">♻️</span>Restore (JSON)</button>
+    <div class="settings-grid">
+      <div class="set-col">
+
+        <div class="panel settings-card">
+          <div class="sec-head"><h3>Data</h3></div>
+          <div class="settings-acts grid2">
+            <button class="side-act" id="import-btn"><span class="ico">📂</span><span id="import-label">Import CSV</span></button>
+            <button class="side-act" id="export-btn"><span class="ico">⬇️</span>Export CSV</button>
+            <button class="side-act" id="backup-btn"><span class="ico">💾</span>Backup (.zip)</button>
+            <button class="side-act" id="restore-btn"><span class="ico">♻️</span>Restore (.zip/.json)</button>
+          </div>
+
+          <div class="set-sub" id="set-server">
+            <div class="set-sub-h">Server · nơi dữ liệu thật sự nằm</div>
+            <div id="server-status" class="muted" style="margin-bottom:10px">Đang kiểm tra server…</div>
+            <p class="muted" style="margin:0 0 10px;line-height:1.55">
+              Mọi thay đổi được ghi thẳng vào SQLite trên server — không cần bấm Save, và mở ở máy nào cũng thấy
+              cùng một dữ liệu. <b>Backup (.zip)</b> gói đủ giao dịch, cài đặt, <b>chi tiết thẻ</b> và ảnh đính kèm
+              trong một file; đó là bản duy nhất mang đi được. ⚠️ File đó chứa số thẻ và CVV chưa mã hoá — cất như cất ví.
+            </p>
+            <button class="side-act" id="backup-json-btn"><span class="ico">📄</span>Backup .json (không kèm ảnh)</button>
+          </div>
+
+          <div class="set-sub set-danger">
+            <div class="set-sub-h" style="color:#ef4444aa">Danger zone</div>
+            <button class="side-act danger" id="wipe-btn"><span class="ico">🗑️</span>Delete all data</button>
+          </div>
+        </div>
+
+        <div class="panel settings-card">
+          <div class="sec-head"><h3>My cards</h3><button class="btn-import" id="card-add-btn">+ Add card</button></div>
+          <p class="muted" style="margin:-6px 0 12px;line-height:1.55">Store your credit/debit card details for reference. ⚠️ Saved <b>unencrypted</b> in the server database and included in every backup — only use on a server you control, and never store a CVV you wouldn't keep in a notes app.</p>
+          <div id="cards-manager"></div>
+        </div>
+
+        <div class="panel settings-card" id="set-ov-layout">
+          <div class="sec-head"><h3>Overview layout</h3></div>
+          <p class="muted" style="margin:-6px 0 12px;line-height:1.55">A miniature of the Overview page: drag a panel to move it inside a column or across to another, and use 👁 to hide it. Saved automatically.</p>
+          <div id="ov-layout-manager"></div>
+        </div>
+
       </div>
-    </div>
+      <div class="set-col">
 
-    <div class="panel settings-card" id="set-sync">
-      <div class="nav-section" style="padding:0 0 10px">Sync</div>
-      <div id="sync-status" class="muted" style="margin-bottom:10px">Checking…</div>
-      <div class="settings-acts" id="sync-acts"></div>
-    </div>
+        <!-- Categories and 50/30/20 are the same job (which category, which bucket) — one card. -->
+        <div class="panel settings-card">
+          <div class="sec-head"><h3>Categories &amp; 50/30/20</h3>
+            <div class="set-hbtns">
+              <button class="btn-import" id="cats-manage-btn">Manage categories</button>
+              <button class="btn-import" id="set-class-btn">⚙️ 50/30/20</button>
+            </div>
+          </div>
+          <p class="muted" style="margin:-6px 0 0;line-height:1.55">Rename · merge · assign 50/30/20 · add/remove — <span id="cats-summary"></span></p>
+          <div class="muted" id="set-class-status" style="padding-top:2px"></div>
+        </div>
 
-    <div class="panel settings-card">
-      <div class="sec-head"><h3>My cards</h3><button class="btn-import" id="card-add-btn">+ Add card</button></div>
-      <p class="muted" style="margin:-6px 0 12px;max-width:62ch;line-height:1.55">Store your credit/debit card details for reference. ⚠️ Saved <b>unencrypted</b> in this browser and included in Backup / Sync JSON — only use on a personal device, and never store CVV you wouldn't keep in a notes app.</p>
-      <div id="cards-manager"></div>
-    </div>
+        <div class="panel settings-card">
+          <div id="set-budgets"></div>
+        </div>
 
-    <div class="panel settings-card">
-      <div class="sec-head"><h3>Categories</h3><button class="btn-import" id="cats-manage-btn">Manage categories</button></div>
-      <p class="muted" style="margin:-6px 0 0;max-width:62ch;line-height:1.55">Rename · merge · assign 50/30/20 · add/remove — <span id="cats-summary"></span></p>
-    </div>
+        <div class="panel settings-card" id="set-misclass" style="display:none"></div>
 
-    <div class="panel settings-card">
-      <div id="set-budgets"></div>
-    </div>
-
-    <div class="panel settings-card">
-      <div class="sec-head"><h3>50/30/20</h3><button class="btn-import" id="set-class-btn">⚙️ Configure 50/30/20</button></div>
-      <div class="muted" id="set-class-status"></div>
-    </div>
-
-    <div class="panel settings-card" id="set-misclass" style="display:none"></div>
-    <div class="panel settings-card" id="set-ov-layout">
-      <div class="sec-head"><h3>Overview layout</h3></div>
-      <p class="muted" style="margin:-6px 0 8px;max-width:62ch;line-height:1.55">Drag to reorder · tick to show / hide panels on Overview. Order is saved automatically.</p>
-      <div id="ov-layout-manager"></div>
-    </div>
-    <div class="panel settings-card">
-      <div class="nav-section" style="padding:0 0 10px;color:#ef4444aa">Danger zone</div>
-      <button class="side-act danger" id="wipe-btn"><span class="ico">🗑️</span>Delete all data</button>
+      </div>
     </div>
 </div>
 </main>
@@ -1116,7 +1203,7 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 <div id="card-overlay" class="overlay" style="display:none">
   <div class="modal">
     <h3 id="card-title">Add card</h3>
-    <p class="muted" style="margin-bottom:10px">⚠️ Stored unencrypted in this browser and in Backup / Sync files. Personal device only.</p>
+    <p class="muted" style="margin-bottom:10px">⚠️ Stored unencrypted in the server database and in every backup file. Keep the server off the public internet.</p>
     <label>Card label</label>
     <input id="cf-label" type="text" autocomplete="off" placeholder="e.g. VPBank Visa">
     <label>Cardholder name</label>
@@ -1190,6 +1277,9 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
   </div>
 </div>
 
+<!-- Data lives in SQLite on the server that serves this page (see docs/API.md); the browser stores nothing.
+     This file therefore has to be opened over http:// from that server — opening it straight off disk shows
+     the "không kết nối được server" screen, because there is no local database to fall back on any more. -->
 <script src="spendy.js"></script>
 </body>
 </html>

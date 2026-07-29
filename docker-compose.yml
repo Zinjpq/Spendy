@@ -1,0 +1,76 @@
+# Spendy — single-service deployment for a personal Debian box.
+#
+# ⚠️  THERE IS NO AUTHENTICATION. Anyone who can reach this port can read and write
+#     everything: transactions, attachment images, and the saved card numbers + CVV.
+#     Keep it on the LAN or on a VPN (Tailscale/WireGuard). Never port-forward it.
+#     Full instructions: docs/DEPLOY.md
+#
+# No `version:` key — it is obsolete in Compose v2 and only produces a warning.
+name: spendy
+
+services:
+  spendy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # The build downloads Chart.js + PapaParse, so the *build machine* needs internet.
+      # The running container never does.
+    image: spendy:local
+    container_name: spendy
+    restart: unless-stopped
+
+    # docker-init (tini) becomes PID 1 and forwards SIGTERM to python. Without this,
+    # python-as-PID-1 ignores SIGTERM and every `docker stop` waits the full grace period.
+    init: true
+
+    # Must match the UID/GID that owns ./data on the host. The image builds user
+    # spendy = 10001:10001; if your ./data is owned by someone else, either
+    #   sudo chown -R 10001:10001 ./data          (recommended)
+    # or put SPENDY_UID / SPENDY_GID in .env to match the host owner.
+    user: "${SPENDY_UID:-10001}:${SPENDY_GID:-10001}"
+
+    environment:
+      SPENDY_DATA: /data          # sqlite db + images/ + tmp/ — the ONLY writable location
+      SPENDY_APP_DIR: /app        # Spendy.html, spendy.js, vendor/ (read-only in practice)
+      SPENDY_HOST: 0.0.0.0        # inside the container; exposure is decided by `ports:` below
+      SPENDY_PORT: "8765"
+      # Server-side timestamps/logs in local time. Calendar dates always come from the
+      # client verbatim — the server never re-derives a date from a timestamp.
+      TZ: "${TZ:-Asia/Ho_Chi_Minh}"
+
+    ports:
+      # SAFE BY DEFAULT: binds to loopback only, so a careless `docker compose up` on a
+      # box with a public IP cannot publish card numbers to the internet.
+      # To reach it from other devices, create a .env file next to this one:
+      #   SPENDY_BIND=192.168.1.50     # this machine's LAN IP  (LAN only — best)
+      #   SPENDY_BIND=100.x.y.z        # this machine's Tailscale IP (remote — best)
+      #   SPENDY_BIND=0.0.0.0          # every interface — ONLY behind a firewall you trust
+      - "${SPENDY_BIND:-127.0.0.1}:8765:8765"
+
+    volumes:
+      # The single source of truth: ./data/spendy.db (+ -wal/-shm), ./data/images/, ./data/tmp/.
+      # BACKUPS — do both, and treat both as secrets (they contain card numbers and CVV in clear):
+      #   1) portable:  curl -fsSL -o spendy-backup.zip http://127.0.0.1:8765/api/backup.zip
+      #   2) cold copy: docker compose stop && sudo tar czf spendy-data-$(date +%F).tar.gz ./data && docker compose start
+      # Never commit ./data, never sync it to a cloud drive unencrypted.
+      - ./data:/data
+
+    healthcheck:
+      # Same probe as the image's HEALTHCHECK, restated here so it is visible at deploy time.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=4).read(1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # With init: true the process dies on the first SIGTERM; this is only a backstop.
+    stop_grace_period: 10s
+
+    security_opt:
+      - "no-new-privileges:true"   # quoted so YAML can never read it as a mapping
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"   # a 61 MB import must never fill the disk with logs
+        max-file: "3"
