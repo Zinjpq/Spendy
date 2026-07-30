@@ -89,6 +89,58 @@ thẻ `.panel` riêng — [Spendy.html:378-379](Spendy.html#L378-L379)):
 
 ---
 
+## 2026-07-30 — Dùng được trên điện thoại
+
+Nguồn: ảnh chụp màn hình app mở qua Tailscale trên điện thoại (`100.111.6.24:8765`) + *"xem thử"*.
+Ba lỗi, đã sửa cả ba.
+
+### ① Số tiền bị xé giữa dòng
+
+Thẻ thống kê Overview hiện `4.308.8 / 31đ`, `-5.934.87 / 9đ` — `.card .value` có
+`word-break:break-word`, mà tiền không có dấu cách nên mọi chỗ ngắt đều rơi vào giữa số.
+
+**Đã làm** — `word-break:normal;overflow-wrap:normal;white-space:nowrap` ([Spendy.html:178](Spendy.html#L178));
+để không tràn thay vì xuống dòng, mỗi thẻ tự thành **container** và cỡ chữ co theo bề rộng của
+chính nó: `font-size:clamp(12.5px,15cqi,18px)` ([Spendy.html:573](Spendy.html#L573)).
+
+### ② `@media(max-width:768px)` thiếu dấu `}`
+
+Media query mobile mở ra mà không đóng, nên **toàn bộ CSS phía sau nó tới hết stylesheet**
+(`.debt-row*`, `.debt-badge*`, `.debts-grid`, cả `@media(max-width:1024px)` lồng bên trong) chỉ
+áp dụng khi màn hình ≤768px. Chưa gây hại vì đó là CSS của UI nợ thủ công đã dormant — nhưng bất
+kỳ rule thêm vào cuối `<style>` sẽ âm thầm thành mobile-only.
+
+**Đã làm** — đóng block, kèm cảnh báo ngay tại chỗ ([Spendy.html:658](Spendy.html#L658)).
+⚠️ Cảnh báo đó **không được** viết thẻ đóng `style` dạng literal trong CSS comment: HTML parser
+kết thúc phần tử ngay tại đó, bất kể cú pháp comment của CSS.
+
+### ③ Sidebar trên điện thoại → bottom tab bar
+
+Trước đây mobile chỉ `flex-wrap` cái sidebar thành hàng ngang: nav biến thành một đống chip
+2-cái-mỗi-dòng, brand + Add + Dark mode + pill server chiếm gần nửa chiều cao trước khi tới nội dung.
+
+**Đã làm** ([Spendy.html:658](Spendy.html#L658) — toàn bộ trong block ≤768px, không đổi một dòng JS nào):
+
+- `.sidebar` → **thanh tab cố định dưới đáy**, 6 tab icon-trên-nhãn-dưới, `env(safe-area-inset-bottom)`
+- `#add-btn` → **FAB tròn** phía trên thanh tab; `#theme-btn` + `.conn-pill` thành 2 chip nổi ở đỉnh
+- `main` chừa padding trên/dưới cho hai thanh; `.toast` nâng lên khỏi FAB
+- Bảng ledger: ẩn cột `#`, đặt `min-width:430px` để tên thôi bị nén thành "Luong / thang / 07"
+- **Cột "Paid" của tab Credit Cards ghim vào lề phải** (`position:sticky;right:0`) — nó là hành động
+  chính của tab, không được là cột trôi ra ngoài. Nhận diện bảng đó bằng `:has(th:nth-child(8))`,
+  bảng duy nhất `renderTable` sinh 8 cột
+- `.scroll-box` (bọc Recent Transactions / Recent Activity / danh sách budget) **chưa từng có CSS** →
+  thêm `overflow-x:auto`, trước đó bảng rộng hơn panel thì tràn ra ngoài chứ không cuộn
+- Recent Transactions co theo **container chứ không theo viewport** ([Spendy.html:592](Spendy.html#L592)) —
+  panel kéo được sang cột khác nên bề rộng cửa sổ không nói gì về chỗ nó thực có; ≤470px bỏ cột
+  Status (thứ Date đã nói rồi), ≤355px thu nhỏ tiếp
+
+Kiểm chứng: chụp headless Edge ở 390px (Overview / Expenses / Income / Credit Cards / Settings /
+modal Add) và 1000 · 1200 · 1440px để chắc desktop không hồi quy. ⚠️ `--window-size=390` bị Edge
+**kẹp lên 492px** trong khi ảnh vẫn xuất đúng 390 → trông y như tràn ngang; muốn viewport 390 thật
+thì nhúng app vào `<iframe width="390">` rồi chụp trang bọc ngoài.
+
+---
+
 ## Ghi chú về nguồn
 
 `MarkUp.docx` xuất ra kèm CSS selector cho từng annotation (`div.panel.settings-card:nth-child(7)`,

@@ -175,7 +175,9 @@ main{flex:1;max-width:1380px;margin:0 auto;padding:32px;width:100%}
 .card-ico.ico-save{background:var(--accent-soft);color:var(--accent-ink)}
 .card-ico.ico-neutral{background:var(--surface-3);color:var(--text-2)}
 .card .label{font-size:11px;color:var(--text-2);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.card .value{font-size:27px;font-weight:700;color:var(--text);letter-spacing:-.02em;line-height:1.16;word-break:break-word}
+/* NEVER break inside a value: money has no spaces, so any wrap lands mid-number
+   ("4.308.831đ" → "4.308.8 / 31đ"). Narrow containers shrink the font instead (see .ov-stats below). */
+.card .value{font-size:27px;font-weight:700;color:var(--text);letter-spacing:-.02em;line-height:1.16;word-break:normal;overflow-wrap:normal;white-space:nowrap}
 .card .value+.label{margin-top:-2px}
 .card .label+.sub{margin-top:-2px}
 .card .sub{font-size:11px;color:var(--text-3)}
@@ -566,9 +568,11 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 .ov-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 /* The stat cards / cashflow are sized for the wide middle column — stack them if dragged into a side column. */
 .ov-col-left .ov-stats,.ov-col-right .ov-stats{grid-template-columns:1fr;gap:12px}
-.ov-stats .card{padding:16px 16px;border-radius:12px;gap:6px}
+/* Container query: three cards inside the middle column get narrow fast (≈88px of usable width at
+   ~1200px viewport), so scale the value with the CARD's own width instead of letting it wrap. */
+.ov-stats .card{padding:16px 16px;border-radius:12px;gap:6px;container-type:inline-size}
 .ov-stats .card-ico{width:32px;height:32px;font-size:15px;border-radius:8px}
-.ov-stats .card .value{font-size:18px}
+.ov-stats .card .value{font-size:clamp(12.5px,15cqi,18px)}
 .ov-stats .card .label{font-size:10px}
 .ov-stats .card .sub{font-size:10px}
 
@@ -577,7 +581,25 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 .cashflow-panel canvas{max-height:260px}
 
 /* Recent transactions table */
+/* Wrapper used by Recent Transactions / Recent Activity / the budget lists. It had no rules at all,
+   so anything wider than the panel (the 5-column .rtx table on a narrow column) escaped it instead
+   of scrolling. */
+.scroll-box{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .rtx{width:100%;border-collapse:collapse;font-size:12px}
+/* Recent Transactions shrinks by CONTAINER, not viewport: the panel can be dragged into any Overview
+   column (see applyOvLayout), so how much room it has says nothing about the window width. Status is
+   dropped first — it repeats what the Date already tells you. */
+#recent-tx{container-type:inline-size}
+@container (max-width:470px){
+  .rtx th:nth-child(5),.rtx td:nth-child(5){display:none}
+  .rtx th,.rtx td{padding:9px 7px}
+  .rtx-note{max-width:80px}
+}
+@container (max-width:355px){
+  .rtx{font-size:11.5px}
+  .rtx th,.rtx td{padding:8px 6px}
+  .rtx-note{max-width:72px}
+}
 .rtx th{background:none;text-align:left;padding:8px 10px;color:var(--text-3);font-weight:600;font-size:11px;border-bottom:1px solid var(--border);position:static}
 .rtx td{padding:11px 10px;border-bottom:1px solid var(--border)}
 .rtx tbody tr:last-child td{border-bottom:none}
@@ -633,16 +655,76 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
 
 
 @media(max-width:1100px){.ledger-grid{grid-template-columns:1fr}}
+/* ---------------- Phone layout (≤768px) ----------------
+   The sidebar was just `flex-wrap`ped into a row, which turned the nav into a pile of chips eating
+   half the screen before any content. On a phone it becomes a fixed BOTTOM TAB BAR instead; Add
+   becomes a floating action button above it, and the theme toggle + server-status pill float in the
+   strip above the page title. `main` is padded to clear both bars.
+   ⚠️ This block must stay CLOSED — it was once missing its `}`, which silently trapped every rule
+   from here to the end of the stylesheet (the .debt-* / .debts-grid block below) inside a
+   max-width:768px query. Also: never write a literal style end-tag in a CSS comment — the HTML
+   parser ends the element there regardless of CSS comment syntax. */
 @media(max-width:768px){
-  main{padding:18px 16px}
+  main{padding:52px 14px calc(88px + env(safe-area-inset-bottom))}
   .app{flex-direction:column}
-  .sidebar{width:100%;height:auto;position:static;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:none;border-bottom:1px solid var(--sidebar-border);gap:6px}
-  .sidebar .brand{padding:4px 8px}
-  .sidebar-toggle{display:none !important}
-  .sidebar .nav-section{display:none}
-  .sidebar .spacer{display:none}
-  .nav-btn{width:auto}
-  .side-act{width:auto}
+
+  /* --- bottom tab bar --- */
+  .sidebar{position:fixed;left:0;right:0;bottom:0;top:auto;width:100%;height:auto;
+    flex-direction:row;flex-wrap:nowrap;align-items:stretch;gap:2px;
+    padding:5px 4px calc(5px + env(safe-area-inset-bottom));
+    border-right:none;border-top:1px solid var(--sidebar-border);
+    box-shadow:0 -2px 14px rgba(0,0,0,.10);z-index:900;transition:none}
+  .sidebar .brand,.sidebar .nav-section,.sidebar .spacer,.sidebar-toggle{display:none !important}
+  .nav-btn{flex:1 1 0;width:auto;min-width:0;flex-direction:column;justify-content:center;
+    gap:3px;padding:7px 2px 5px;font-size:9px;font-weight:600;letter-spacing:0;text-align:center}
+  .nav-btn span:not(.ico){width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .nav-btn .ico{font-size:17px;width:auto}
+  .nav-btn:hover{background:none;color:var(--sidebar-text)}   /* no hover state on touch */
+  .nav-btn:hover .ico{transform:none}
+  .nav-btn.active{background:var(--sidebar-active-bg);color:var(--sidebar-active-ink)}
+
+  /* --- Add → floating action button (id beats `.sidebar .side-act.accent`) --- */
+  .sidebar .side-act{width:auto}
+  .sidebar .side-act#add-btn{position:fixed;right:14px;bottom:calc(78px + env(safe-area-inset-bottom));
+    width:54px;height:54px;padding:0;border-radius:50%;justify-content:center;
+    box-shadow:0 6px 18px rgba(0,0,0,.28);z-index:901}
+  #add-btn .ico{font-size:21px;width:auto;margin:0}
+  #add-label{display:none}
+
+  /* --- theme toggle + connection status float above the page title --- */
+  #theme-btn{position:fixed;top:8px;right:12px;width:auto;padding:7px 11px;border-radius:999px;z-index:901}
+  #theme-btn .ico{font-size:15px;width:auto}
+  #theme-label{display:none}
+  .sidebar .conn-pill{position:fixed;top:8px;left:12px;width:auto;font-size:10px;padding:6px 10px;z-index:901}
+
+  /* --- denser page chrome so the phone doesn't need pinch-zoom --- */
+  .page-head{margin-bottom:16px;gap:10px}
+  .view-title{font-size:23px}
+  .view-title .em{font-size:19px;margin-right:8px}
+  .toolbar,.controls{width:100%}
+  .controls input[type=search]{min-width:0;flex:1 1 150px}
+  .notif-pop{width:min(330px,calc(100vw - 28px))}
+  .table-wrap{-webkit-overflow-scrolling:touch}
+  th{padding:9px 11px}
+  td{padding:10px 11px}
+  /* Ledger tables: drop the row-number column (pure decoration on a phone) and keep a floor width so
+     the browser stops squeezing names into "Luong / thang / 07". Overflow scrolls inside .table-wrap. */
+  .table-wrap table{min-width:430px}
+  .table-wrap th:first-child,.table-wrap td:first-child{display:none}
+  /* On the Credit Cards ledger the Paid tick is the whole point of the tab, so it must not be the
+     column that scrolls out of sight — pin it to the right edge. `:has(th:nth-child(8))` identifies
+     that table: it is the only one renderTable gives 8 columns (…Method, Paid on, Paid). */
+  .table-wrap:has(th:nth-child(8)) th:last-child,
+  .table-wrap:has(th:nth-child(8)) td:last-child{
+    position:sticky;right:0;background:var(--surface);box-shadow:-7px 0 9px -7px rgba(0,0,0,.22)}
+  .table-wrap:has(th:nth-child(8)) th:last-child{top:0}
+  .panel{padding:14px 15px}
+  .card{padding:16px}
+  .settings-acts.grid2{grid-template-columns:1fr 1fr}
+  /* the toast would otherwise sit under the FAB / tab bar */
+  .toast{left:12px;right:12px;bottom:calc(88px + env(safe-area-inset-bottom));max-width:none}
+}
+
 /* Debts & Credit Cards panel and rows */
 .debt-row {
   display: flex;
