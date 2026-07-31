@@ -135,6 +135,8 @@ let cards = [];             // Saved card details (Settings → My cards) — ar
 let editingCardId = null;   // id of the card being edited in the card modal, or null when adding
 let revealedCards = new Set(); // ids of saved cards whose number/CVV are currently revealed (UI only, not persisted)
 let pinnedCardId = null;    // id of the card featured on the Overview "card" (meta 'pinnedCard'); null → first card
+let templates = [];         // Quick-add templates: saved transaction shapes shown as chips in the Add modal (meta 'templates')
+let editingTplId = null;    // id of the template being edited in the template modal, or null when adding
 let editingDebtId = null;   // id of the debt being edited in the debt modal, or null when adding
 let ovWidgets = null;       // Overview dashboard layout: [{id, visible}]; null until loaded from meta 'overviewWidgets'
 
@@ -540,6 +542,7 @@ async function loadFromDB() {
   ccNoteFps = (await getMeta(db, 'ccNoteFps')) || {};
   cards = (await getMeta(db, 'cards')) || [];
   pinnedCardId = (await getMeta(db, 'pinnedCard')) || null;
+  templates = (await getMeta(db, 'templates')) || [];
   ovWidgets = normalizeOvWidgets(await getMeta(db, 'overviewWidgets')); // fills in `col` for lists saved before columns were movable
   // One-time date repair (idempotent). Older imports parsed non-ISO dates like Notion's "March 19, 2026"
   // as LOCAL midnight, then derived dateStr via toISOString() (UTC) — rolling the day back by one in any
@@ -1010,6 +1013,7 @@ function applyOvLayout(layout) {
 function renderSettings() {
   renderCategoriesManager();
   renderCardsManager();
+  renderTemplatesManager();
   renderBudgets('set-budgets', true);   // inline editable + drag-sortable (replaces the old modal)
   renderMisclass('set-misclass');
   renderServerStatus();
@@ -1633,6 +1637,177 @@ async function deleteCard(id) {
   renderCardsManager();
   renderBalanceCard();
   markSaved();
+}
+
+// --- Quick-add templates ("mẫu") -------------------------------------------------------------------
+// A template is one saved transaction SHAPE — name · amount · type · category · method — offered as a chip at
+// the top of the Add modal; clicking it fills the form, which the user can still tweak before saving. It is a
+// prefill, never a write of its own. Two things deliberately stay OUT of a template: the date (always today)
+// and the installment plan (that belongs to a single purchase, not to the shape of it). Meta key 'templates'.
+function getTemplates() { return Array.isArray(templates) ? templates : []; }
+async function persistTemplates() { const db = await openDB(); await putMeta(db, 'templates', templates); db.close(); }
+
+// Emoji guess for a brand-new template, from its name + category. Matching runs on norm()'d text (accents
+// stripped); a single-word keyword must match a WHOLE token — 'an' (ăn) would otherwise fire on "thanh toán",
+// "ngân hàng", "bank"… Multi-word keywords are matched as substrings, where that ambiguity doesn't arise.
+const TPL_ICONS = [
+  [['ca phe', 'cafe', 'coffee', 'tra sua', 'milk tea', 'highlands', 'starbucks'], '☕'],
+  [['xang', 'fuel', 'petrol', 'gas'], '⛽'],
+  [['an', 'com', 'pho', 'bun', 'mi', 'an uong', 'an trua', 'an sang', 'lunch', 'dinner', 'food', 'nha hang', 'restaurant'], '🍜'],
+  [['cho', 'sieu thi', 'grocery', 'market', 'bach hoa', 'winmart', 'bhx'], '🛒'],
+  [['dien', 'nuoc', 'electric', 'water', 'utility', 'hoa don'], '💡'],
+  [['nha', 'rent', 'thue nha', 'phong tro'], '🏠'],
+  [['luong', 'salary', 'thu nhap', 'thuong', 'bonus'], '💰'],
+  [['grab', 'taxi', 'xe', 'bus', 'transport', 've may bay', 'flight', 'gui xe'], '🚗'],
+  [['thuoc', 'benh', 'medic', 'pharmacy', 'kham benh', 'bao hiem'], '💊'],
+  [['hoc', 'sach', 'course', 'book', 'education', 'hoc phi'], '📚'],
+  [['phim', 'game', 'netflix', 'spotify', 'giai tri'], '🎬'],
+  [['internet', 'wifi', 'mobile', 'sim', 'data', 'dien thoai'], '📱'],
+  [['qua', 'gift', 'sinh nhat', 'cuoi'], '🎁'],
+  [['dau tu', 'invest', 'chung khoan', 'vang', 'gold', 'crypto', 'tiet kiem'], '📈'],
+];
+function tplGuessIcon(name, category, type) {
+  const hay = norm((name || '') + ' ' + (category || ''));
+  const tokens = hay.split(/\s+/).filter(Boolean);
+  for (const [keys, ico] of TPL_ICONS) {
+    if (keys.some(k => k.includes(' ') ? hay.includes(k) : tokens.includes(k))) return ico;
+  }
+  return type === 'income' ? '💰' : type === 'invest' ? '📈' : type === 'debt' ? '💳' : '💸';
+}
+// One-line "what does this chip fill in" summary — chip tooltip and Settings sub-line.
+function tplSummary(t) {
+  return [t.name || '—', t.amount > 0 ? fmt(t.amount) : 'số tiền nhập mỗi lần',
+          t.category || 'Uncategorized', t.method || 'chưa đặt method'].join(' · ');
+}
+
+// Chips at the top of the Add/Edit modal. Applying a template while EDITING would silently overwrite the row
+// being fixed, so in edit mode only the "save this as a template" chip is offered.
+function renderTemplateChips() {
+  const row = document.getElementById('ef-tpl-row');
+  if (!row) return;
+  const list = editingId == null ? getTemplates() : [];
+  row.innerHTML = list.map(t => `<button type="button" class="tpl-chip" data-id="${esc(t.id)}" title="${esc(tplSummary(t))}">
+      <span class="tpl-ico">${esc(t.icon || '💸')}</span><span class="tpl-name">${esc(t.label || t.name || 'Mẫu')}</span>${t.amount > 0 ? `<span class="tpl-amt">${esc(fmt(t.amount))}</span>` : ''}
+    </button>`).join('') +
+    `<button type="button" class="tpl-chip tpl-new" id="ef-tpl-save" title="Lưu những gì đang điền thành một mẫu">＋ Lưu mẫu</button>`;
+  row.querySelectorAll('.tpl-chip[data-id]').forEach(b => b.addEventListener('click', () => applyTemplate(b.dataset.id)));
+  document.getElementById('ef-tpl-save').addEventListener('click', openTemplateFromForm);
+}
+
+// Fill the open Add form from a template. Date is left alone (openAdd already set today), and the amount is
+// focused because that is the field that differs from one repeat to the next.
+function applyTemplate(id) {
+  const t = getTemplates().find(x => x.id === id);
+  if (!t) return;
+  efName.value = t.name || '';
+  efAmount.value = t.amount > 0 ? t.amount : '';
+  efType.value = t.type || 'expense';
+  refillCats(t.category || '');
+  fillSelect(efMethod, null, methodOptions(), t.method || '', true, false);
+  updateCatSuggest();
+  updateAmountWarn();
+  updateInstallField(); // method/type just changed → show or hide the payment-plan picker
+  efAmount.focus();
+  efAmount.select();
+}
+
+// "＋ Lưu mẫu" — capture whatever is currently in the Add/Edit form, then open the template modal so the chip
+// gets a name and an icon before it is saved.
+function openTemplateFromForm() {
+  const name = efName.value.trim();
+  const amount = parseAmount(efAmount.value);
+  if (!name) { toast('Điền tên giao dịch trước khi lưu mẫu', 'warn'); return; }
+  openTemplate(null, {
+    name, amount, type: efType.value,
+    category: selectValue(efCategory, efCategoryNew),
+    method: selectValue(efMethod, null)
+  });
+}
+
+function refillTplCats(current) {
+  fillSelect(document.getElementById('tf-category'), document.getElementById('tf-category-new'),
+             catsForType(document.getElementById('tf-type').value), current, false);
+}
+function closeTemplate() { editingTplId = null; document.getElementById('tpl-overlay').style.display = 'none'; }
+
+// id = edit an existing template; prefill = the form values captured by openTemplateFromForm (new template).
+function openTemplate(id, prefill) {
+  editingTplId = id != null ? id : null;
+  const t = editingTplId != null ? getTemplates().find(x => x.id === editingTplId) : null;
+  const src = t || prefill || {};
+  document.getElementById('tpl-title').textContent = t ? 'Sửa mẫu' : 'Mẫu mới';
+  document.getElementById('tf-icon').value = src.icon || tplGuessIcon(src.name, src.category, src.type);
+  document.getElementById('tf-label').value = src.label || src.name || '';
+  document.getElementById('tf-name').value = src.name || '';
+  document.getElementById('tf-amount').value = src.amount > 0 ? src.amount : '';
+  document.getElementById('tf-type').value = src.type || 'expense';
+  refillTplCats(src.category || '');
+  fillSelect(document.getElementById('tf-method'), null, methodOptions(), src.method || '', true, false);
+  document.getElementById('tf-delete').style.display = t ? 'inline-block' : 'none';
+  document.getElementById('tpl-overlay').style.display = 'flex';
+  document.getElementById('tf-label').focus();
+}
+
+async function saveTemplate() {
+  const name = document.getElementById('tf-name').value.trim();
+  if (!name) { toast('Mẫu cần tên giao dịch', 'warn'); return; }
+  const type = document.getElementById('tf-type').value;
+  const category = selectValue(document.getElementById('tf-category'), document.getElementById('tf-category-new')) || 'Uncategorized';
+  const rec = {
+    id: editingTplId || ('t' + Date.now()),
+    icon: document.getElementById('tf-icon').value.trim() || tplGuessIcon(name, category, type),
+    label: document.getElementById('tf-label').value.trim() || name,
+    name,
+    amount: parseAmount(document.getElementById('tf-amount').value) || 0, // 0 = ask for the amount every time
+    type,
+    category,
+    method: selectValue(document.getElementById('tf-method'), null)
+  };
+  const list = getTemplates().slice();
+  const idx = list.findIndex(x => x.id === rec.id);
+  if (idx >= 0) list[idx] = rec; else list.push(rec);
+  templates = list;
+  await persistTemplates();
+  closeTemplate();
+  toast(idx >= 0 ? 'Đã lưu mẫu' : 'Đã thêm mẫu', 'success');
+  renderTemplateChips();     // the Add modal underneath may still be open — refresh its chips in place
+  renderTemplatesManager();
+  markSaved();
+}
+
+async function deleteTemplate(id) {
+  const tid = (id != null && typeof id !== 'object') ? id : editingTplId; // from the list (id) or the modal Delete (no arg)
+  if (tid == null) return;
+  if (!confirm('Xoá mẫu này?')) return;
+  templates = getTemplates().filter(x => x.id !== tid);
+  await persistTemplates();
+  closeTemplate();
+  toast('Đã xoá mẫu', 'success');
+  renderTemplateChips();
+  renderTemplatesManager();
+  markSaved();
+}
+
+function renderTemplatesManager() {
+  const wrap = document.getElementById('tpl-manager');
+  if (!wrap) return;
+  const list = getTemplates();
+  if (!list.length) {
+    wrap.innerHTML = `<div class="tpl-empty">Chưa có mẫu nào. Mở <b>Add transaction</b> rồi bấm “＋ Lưu mẫu” để lưu giao dịch đang điền, hoặc bấm “+ Add template”.</div>`;
+    return;
+  }
+  wrap.innerHTML = list.map(t => `<div class="tpl-item">
+      <span class="tpl-item-ico">${esc(t.icon || '💸')}</span>
+      <div class="tpl-item-body">
+        <div class="tpl-item-name">${esc(t.label || t.name || 'Mẫu')}</div>
+        <div class="tpl-item-sub">${esc(tplSummary(t))}</div>
+      </div>
+      <button class="tpl-item-btn" data-act="edit" data-id="${esc(t.id)}">Edit</button>
+      <button class="tpl-item-btn" data-act="del" data-id="${esc(t.id)}">Delete</button>
+    </div>`).join('');
+  wrap.querySelectorAll('.tpl-item-btn').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.act === 'edit') openTemplate(b.dataset.id); else deleteTemplate(b.dataset.id);
+  }));
 }
 
 // --- Debts & Credit Cards modal and database logic ---
@@ -2702,7 +2877,8 @@ async function restoreJSON(text) {
   const catOkList = (!Array.isArray(payload) && Array.isArray(payload.catOk)) ? payload.catOk : null;
   const cardsList = (!Array.isArray(payload) && Array.isArray(payload.cards)) ? payload.cards : null;
   const pinnedCard = (!Array.isArray(payload) && typeof payload.pinnedCard === 'string') ? payload.pinnedCard : null;
-  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, ccAt, ccNote, catOk: catOkList, cards: cardsList, pinnedCard };
+  const tplList = (!Array.isArray(payload) && Array.isArray(payload.templates)) ? payload.templates : null;
+  pendingRestore = { fresh, total: incoming.length, budgets, goal, catClass, incomeBase, cats, plans, debts, ccPaid, ccAt, ccNote, catOk: catOkList, cards: cardsList, pinnedCard, templates: tplList };
 
   // Summarise exactly what will happen and wait for confirmation (numbers only — safe to innerHTML).
   const lines = [`File has <b>${incoming.length}</b> records: <b style="color:#22c55e">${fresh.length} new</b> will be added, ${incoming.length - fresh.length} already present.`];
@@ -2714,6 +2890,7 @@ async function restoreJSON(text) {
   if (plans) lines.push(`Overwrite <b>saving plans</b> (${plans.length} plans).`);
   if (debts) lines.push(`Overwrite <b>debts & credit cards</b> (${debts.length} entries).`);
   if (cardsList) lines.push(`Overwrite <b>saved cards</b> (${cardsList.length}).`);
+  if (tplList) lines.push(`Overwrite <b>quick-add templates</b> (${tplList.length}).`);
   if (ccAt) lines.push(`Overwrite <b>credit-card paid dates</b> (${Object.keys(ccAt).length}).`);
   if (catOkList) lines.push(`Overwrite <b>confirmed categories</b> (${catOkList.length}).`);
   if (ccNote) lines.push(`Overwrite <b>credit-card confirm notes</b> (${Object.keys(ccNote).length}, legacy).`);
@@ -2741,7 +2918,7 @@ async function commitRestore() {
     return;
   }
   if (!pendingRestore) return;
-  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, ccAt: cca, ccNote: cn, catOk: cok, cards: cds, pinnedCard: pc } = pendingRestore;
+  const { fresh, total, budgets: b, goal: g, catClass: cc, incomeBase: ib, cats: ct, plans: pl, debts: dt, ccPaid: ccp, ccAt: cca, ccNote: cn, catOk: cok, cards: cds, pinnedCard: pc, templates: tpl } = pendingRestore;
   pendingRestore = null;
   const db = await openDB();
   let added = 0;
@@ -2770,6 +2947,7 @@ async function commitRestore() {
   if (cok) await putMeta(db, 'catOk', cok);
   if (cds) await putMeta(db, 'cards', cds);
   if (pc) await putMeta(db, 'pinnedCard', pc);
+  if (tpl) await putMeta(db, 'templates', tpl);
   // A restored OLD backup may contain legacy split rows ("Foo (k/N)"). Clear the one-time-merge flag so the
   // following loadFromDB re-runs mergeLegacyInstallments and collapses them (it's a conservative no-op otherwise).
   await putMeta(db, 'mergedInstallments', false);
@@ -2979,15 +3157,19 @@ function fillSelect(sel, newInput, values, current, allowBlank, allowNew = true)
 
 // Category options offered for a given record type: that type's existing categories, plus the
 // pre-seeded suggestions per type so the dropdown is useful before any data exists.
-function refillCats(current) {
-  const t = efType.value;
+function catsForType(t) {
   let cats = allData.filter(d => typeOf(d) === t).map(d => d.category);
   cats = cats.concat(Object.keys(catReg).filter(c => catReg[c] === t)); // user-registered (incl. empty) categories
   if (t === 'invest') cats = cats.concat(INVEST_CATS);
   else if (t === 'income') cats = cats.concat(INCOME_CATS);
   else cats = cats.concat(EXPENSE_CATS);
-  fillSelect(efCategory, efCategoryNew, cats, current, false);
+  return cats;
 }
+function refillCats(current) { fillSelect(efCategory, efCategoryNew, catsForType(efType.value), current, false); }
+
+// Payment methods offered by the pickers: the ones already used in the data, plus every saved card and the
+// generic "Credit Card" — so a card transaction can be tagged before any card txn exists.
+function methodOptions() { return allData.map(x => x.method).concat(getCards().map(c => c.label), 'Credit Card'); }
 
 // Show a select's paired free-text input only when "➕ New…" is picked.
 function toggleNew(sel, newInput) {
@@ -3109,10 +3291,11 @@ function openEditor(id, presetCat) {
   efType.value = typeOf(d);
   efDate.value = d.dateStr || '';
   refillCats(presetCat || d.category || '');
-  fillSelect(efMethod, null, allData.map(x => x.method).concat(getCards().map(c => c.label), 'Credit Card'), d.method || '', true, false);
+  fillSelect(efMethod, null, methodOptions(), d.method || '', true, false);
   setImgPreview(d.image || null);
   document.getElementById('ef-delete').style.display = 'inline-block';
   overlay.style.display = 'flex';
+  renderTemplateChips(); // edit mode → only the "save as template" chip
   updateCatSuggest();
   updateAmountWarn();
   // Pre-fill the payment plan from the record so editing it keeps the installment status (instead of silently
@@ -3134,10 +3317,11 @@ function openAdd() {
   const today = new Date();
   efDate.value = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
   refillCats('');
-  fillSelect(efMethod, null, allData.map(x => x.method).concat(getCards().map(c => c.label), 'Credit Card'), view === 'debts' ? ((getPinnedCard() || {}).label || 'Credit Card') : '', true, false);
+  fillSelect(efMethod, null, methodOptions(), view === 'debts' ? ((getPinnedCard() || {}).label || 'Credit Card') : '', true, false);
   setImgPreview(null);
   document.getElementById('ef-delete').style.display = 'none';
   overlay.style.display = 'flex';
+  renderTemplateChips(); // add mode → the saved templates, one click each
   updateCatSuggest();
   updateAmountWarn();
   efInstall.value = 3; setPayMode('once'); // fresh add → default to "Mua trước trả sau"
@@ -3385,9 +3569,30 @@ function dismissOnBackdrop(el, onClose) {
 }
 dismissOnBackdrop(overlay, closeEditor);
 document.addEventListener('keydown', e => {
+  // The template modal can sit ON TOP of the editor; while it is open it owns the keys, or Enter inside it
+  // would save the transaction underneath.
+  if (document.getElementById('tpl-overlay').style.display !== 'none') return;
   if (overlay.style.display === 'none') return;
   if (e.key === 'Escape') closeEditor();
   else if (e.key === 'Enter' && e.target.tagName === 'INPUT') saveEdit();
+});
+
+// Quick-add template modal (opened from the Settings card or the "＋ Lưu mẫu" chip in the editor)
+document.getElementById('tpl-add-btn').addEventListener('click', () => openTemplate(null));
+document.getElementById('tf-save').addEventListener('click', saveTemplate);
+document.getElementById('tf-delete').addEventListener('click', () => deleteTemplate());
+document.getElementById('tf-cancel').addEventListener('click', closeTemplate);
+dismissOnBackdrop(document.getElementById('tpl-overlay'), closeTemplate);
+document.getElementById('tf-type').addEventListener('change', () => refillTplCats(''));
+document.getElementById('tf-category').addEventListener('change', () => {
+  const sel = document.getElementById('tf-category'), New = document.getElementById('tf-category-new');
+  toggleNew(sel, New);
+  if (sel.value === '__new__') New.focus();
+});
+document.addEventListener('keydown', e => {
+  if (document.getElementById('tpl-overlay').style.display === 'none') return;
+  if (e.key === 'Escape') closeTemplate();
+  else if (e.key === 'Enter' && e.target.tagName === 'INPUT') saveTemplate();
 });
 
 document.getElementById('import-btn').addEventListener('click', () => {

@@ -265,6 +265,29 @@ main{flex:1;max-width:1380px;margin:0 auto;padding:32px;width:100%}
 /* "Amount looks too small" warning under the modal Amount field (updateAmountWarn) */
 .amt-warn{margin-top:6px;font-size:11.5px;font-weight:600;color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn);border-radius:8px;padding:6px 10px;display:flex;align-items:center;gap:6px}
 
+/* Quick-add templates ("mẫu"): chips at the top of the Add modal that fill the whole form in one click,
+   plus the list that manages them in Settings. */
+#ef-tpl-wrap label{margin-top:0}            /* it is now the modal-form's first label — keep the old flush top */
+.tpl-row{display:flex;flex-wrap:wrap;gap:6px}
+.tpl-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-family:inherit;font-size:11.5px;font-weight:600;color:var(--text);background:var(--surface-2);border:1px solid var(--border-2);border-radius:999px;padding:5px 11px;cursor:pointer;transition:.12s}
+.tpl-chip:hover{border-color:var(--accent);color:var(--accent)}
+.tpl-chip .tpl-ico{font-size:12px;flex:0 0 auto}
+.tpl-chip .tpl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpl-chip .tpl-amt{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);flex:0 0 auto}
+.tpl-chip:hover .tpl-amt{color:inherit}
+.tpl-chip.tpl-new{border-style:dashed;color:var(--text-3)}
+.tpl-chip.tpl-new:hover{color:var(--accent)}
+.tpl-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.tpl-item:last-child{border-bottom:none}
+.tpl-item-ico{font-size:16px;flex:0 0 auto}
+.tpl-item-body{flex:1 1 auto;min-width:0}
+.tpl-item-name{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpl-item-sub{font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpl-item-btn{flex:0 0 auto;background:none;border:1px solid var(--border-2);color:var(--text-3);border-radius:7px;cursor:pointer;padding:4px 9px;font-size:11.5px;font-family:inherit;line-height:1;transition:.12s}
+.tpl-item-btn:hover{border-color:var(--accent);color:var(--accent)}
+.tpl-item-btn[data-act="del"]:hover{border-color:var(--neg);color:var(--neg)}
+.tpl-empty{color:var(--text-3);font-size:12.5px;padding:4px 0;line-height:1.55}
+
 .table-wrap{background:var(--surface);border-radius:12px;border:1px solid var(--border);overflow-x:auto;box-shadow:var(--card-shadow)}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{background:var(--surface-2);color:var(--text-3);font-weight:600;text-align:left;padding:11px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;text-transform:uppercase;letter-spacing:.05em;font-size:10px}
@@ -1069,6 +1092,12 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
         </div>
 
         <div class="panel settings-card">
+          <div class="sec-head"><h3>Quick-add templates</h3><button class="btn-import" id="tpl-add-btn">+ Add template</button></div>
+          <p class="muted" style="margin:-6px 0 12px;line-height:1.55">Mẫu cho những giao dịch hay lặp lại. Chúng hiện thành chip ở đầu modal <b>Add transaction</b> — bấm một cái là điền sẵn tên · số tiền · loại · danh mục · phương thức, chỉ việc Save.</p>
+          <div id="tpl-manager"></div>
+        </div>
+
+        <div class="panel settings-card">
           <div id="set-budgets"></div>
         </div>
 
@@ -1093,6 +1122,12 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
     <h3 id="modal-title">Edit transaction</h3>
     <div class="modal-grid">
       <div class="modal-form">
+        <!-- Quick-add templates: one click fills name · amount · type · category · method (renderTemplateChips).
+             While EDITING a row only the "＋ Lưu mẫu" chip shows — applying one would overwrite the row. -->
+        <div id="ef-tpl-wrap">
+          <label>Mẫu nhanh</label>
+          <div id="ef-tpl-row" class="tpl-row"></div>
+        </div>
         <label>Name</label>
         <input id="ef-name" type="text" autocomplete="off">
         <label>Amount (đ)</label>
@@ -1138,6 +1173,36 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
       <div style="flex:1"></div>
       <button id="ef-cancel" class="btn-cancel">Cancel</button>
       <button id="ef-save" class="btn-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Quick-add template editor. Opens ON TOP of the Add modal (via its "＋ Lưu mẫu" chip), so it must sit
+     after #edit-overlay in the DOM — same z-index, the later element paints above. -->
+<div id="tpl-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h3 id="tpl-title">Mẫu giao dịch</h3>
+    <p class="muted" style="margin-bottom:10px">Mẫu chỉ điền sẵn form Add — bấm chip xong vẫn sửa được trước khi Save. Ngày luôn là hôm nay, nên mẫu không lưu ngày.</p>
+    <label>Icon (emoji)</label>
+    <input id="tf-icon" type="text" autocomplete="off" maxlength="2" placeholder="☕">
+    <label>Tên mẫu (hiện trên chip)</label>
+    <input id="tf-label" type="text" autocomplete="off" placeholder="Cà phê sáng">
+    <label>Tên giao dịch</label>
+    <input id="tf-name" type="text" autocomplete="off" placeholder="Cà phê">
+    <label>Amount (đ) — để trống nếu mỗi lần một khác</label>
+    <input id="tf-amount" type="number" step="any" min="0" placeholder="25000">
+    <label>Type</label>
+    <select id="tf-type"><option value="expense">Expense</option><option value="income">Income</option><option value="invest">Investment</option><option value="debt">Debt</option></select>
+    <label>Category</label>
+    <select id="tf-category"></select>
+    <input id="tf-category-new" type="text" placeholder="New category name" autocomplete="off" style="display:none;margin-top:6px">
+    <label>Payment Method</label>
+    <select id="tf-method"></select>
+    <div class="modal-actions">
+      <button id="tf-delete" class="btn-del">Delete</button>
+      <div style="flex:1"></div>
+      <button id="tf-cancel" class="btn-cancel">Cancel</button>
+      <button id="tf-save" class="btn-save">Save</button>
     </div>
   </div>
 </div>

@@ -145,7 +145,7 @@ images/<hash>.<ext>     ← every image referenced by a record
   "records": [ …records without id, image = hash… ],
   "budgets": {}, "goal": 0, "catClass": {}, "incomeBase": 0, "cats": {}, "plans": [],
   "debts": [], "ccPaidFps": [], "ccPaidAt": {}, "ccNoteFps": {}, "catOk": [],
-  "cards": [ …full card details… ], "pinnedCard": null }
+  "cards": [ …full card details… ], "pinnedCard": null, "templates": [] }
 ```
 Every meta key present in the DB is included, so **cards, pinned card, budgets, plans, paid ticks and
 50/30/20 settings all round-trip**.

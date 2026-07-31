@@ -236,7 +236,7 @@ ERROR_SLUGS = {
 BACKUP_DEFAULTS = {
     'budgets': {}, 'goal': 0, 'catClass': {}, 'incomeBase': 0, 'cats': {}, 'plans': [],
     'debts': [], 'ccPaidFps': [], 'ccPaidAt': {}, 'ccNoteFps': {}, 'catOk': [],
-    'cards': [], 'pinnedCard': None,
+    'cards': [], 'pinnedCard': None, 'templates': [],
 }
 # Reserved top-level keys in a backup file — everything else in the file is a meta key.
 BACKUP_RESERVED = ('app', 'version', 'savedAt', 'records')
