@@ -706,6 +706,16 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
   .nav-btn:hover .ico{transform:none}
   .nav-btn.active{background:var(--sidebar-active-bg);color:var(--sidebar-active-ink)}
 
+  /* ⚠️ The desktop "collapse sidebar" state is persisted in localStorage, so it follows the user onto
+     the phone — and `.sidebar.collapsed` (0,2,0) outranks the `.sidebar` bar rules above (0,1,0),
+     which shrank the tab bar into a 68px box of stacked icons in the bottom-left corner. There is no
+     collapsed state for a tab bar, so undo it at matching specificity. */
+  .sidebar.collapsed{width:100%;padding:5px 4px calc(5px + env(safe-area-inset-bottom))}
+  .sidebar.collapsed .nav-btn span:not(.ico){display:block !important}
+  .sidebar.collapsed .nav-btn{justify-content:center;padding:7px 2px 5px}
+  .sidebar.collapsed .nav-btn .ico{font-size:17px;margin:0;width:auto}
+  .sidebar.collapsed .conn-pill .conn-label{display:inline}
+
   /* --- Add → floating action button (id beats `.sidebar .side-act.accent`) --- */
   .sidebar .side-act{width:auto}
   .sidebar .side-act#add-btn{position:fixed;right:14px;bottom:calc(78px + env(safe-area-inset-bottom));
@@ -724,7 +734,11 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
   .page-head{margin-bottom:16px;gap:10px}
   .view-title{font-size:23px}
   .view-title .em{font-size:19px;margin-right:8px}
-  .toolbar,.controls{width:100%}
+  /* The bell rides on the toolbar's own row: `.controls{width:100%}` used to push it onto a line of
+     its own under the Month select. Let the filters take the slack instead and keep the bell beside them. */
+  .toolbar{width:100%;flex-wrap:nowrap}
+  .controls{flex:1 1 auto;min-width:0}
+  .notif-wrap{flex-shrink:0}
   .controls input[type=search]{min-width:0;flex:1 1 150px}
   .notif-pop{width:min(330px,calc(100vw - 28px))}
   .table-wrap{-webkit-overflow-scrolling:touch}
@@ -743,6 +757,9 @@ tbody tr.tx-paid .amt{text-decoration:line-through}
   .table-wrap:has(th:nth-child(8)) th:last-child{top:0}
   .panel{padding:14px 15px}
   .card{padding:16px}
+  /* aspect-ratio 1.586 means the card's height tracks the column width — at the top of the phone range
+     (~740px) that is a 450px-tall slab of mostly empty space. Cap it near a real card's size instead. */
+  .balance-card{max-width:400px;margin-inline:auto;padding:18px 20px}
   .settings-acts.grid2{grid-template-columns:1fr 1fr}
   /* the toast would otherwise sit under the FAB / tab bar */
   .toast{left:12px;right:12px;bottom:calc(88px + env(safe-area-inset-bottom));max-width:none}
